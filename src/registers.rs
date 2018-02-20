@@ -56,4 +56,12 @@ impl Registers {
         self.l = (value & 0xff) as u8;
     }
 
+    pub fn set_flag(&mut self, mask: u8, value: bool) {
+        if (value) {
+            self.f |= mask
+        } else {
+            self.f &= !mask
+        }
+    }
+
 }
