@@ -1,0 +1,4 @@
+.DS_STORE
+roms/
+/target/
+**/*.rs.bk
