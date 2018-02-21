@@ -71,4 +71,8 @@ impl Registers {
         }
     }
 
+    pub fn get_flag(&mut self, mask: Flag) -> bool {
+        (self.f & (mask as u8)) != 0
+    }
+
 }

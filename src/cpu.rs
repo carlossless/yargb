@@ -48,7 +48,7 @@ impl CPU {
 			0x14 => { let mut v = self.regs.d; v = self.inc_byte(v); self.regs.d = v; 1 } // INC D
 			0x15 => { let mut v = self.regs.d; v = self.dec_byte(v); self.regs.d = v; 1 } // DEC D
 			0x16 => { let v = self.fetch_byte(); self.regs.d = v; 2 } // LD D,d8
-			// RLA
+			0x17 => { self.rla(); 1 } // RLA
 			// JR r8
 			0x19 => { let v = self.regs.get_de(); self.add_to_hl(v); 2 } // ADD HL,DE
 			0x1A => { let a = self.regs.get_de(); self.regs.a = self.mmu.read_byte(a); 2 } // LD A,(DE)
@@ -148,6 +148,8 @@ impl CPU {
 		result
 	}
 
+	// Rotates
+
 	fn rlca(&mut self) {
 		let a = self.regs.a;
 		self.regs.set_flag(Z, false);
@@ -155,6 +157,23 @@ impl CPU {
 		self.regs.set_flag(H, false);
 		self.regs.set_flag(C, (a & (1 << 7)) > 0);
 		self.regs.a = a.rotate_left(1);
+	}
+
+	// TODO: shifting is better here.
+	fn rla(&mut self) {
+		let mut a = self.regs.a;
+		let c = self.regs.get_flag(C);
+		self.regs.set_flag(Z, false);
+		self.regs.set_flag(N, false);
+		self.regs.set_flag(H, false);
+		self.regs.set_flag(C, (a & (1 << 7)) > 0);
+		a = a.rotate_right(1);
+		if c {
+			a = a | 1;
+		} else {
+			a = a & 0;
+		}
+		self.regs.a = a;
 	}
 
 	fn rrca(&mut self) {
