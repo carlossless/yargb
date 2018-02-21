@@ -33,7 +33,7 @@ impl CPU {
 			0x06 => { let v = self.fetch_byte(); self.regs.b = v; 2 } // LD B,d8
 			// RLCA
 			// LD (a16),SP
-			// ADD HL,BC
+			0x09 => { let v = self.regs.get_bc(); self.add_to_hl(v); 2 } // ADD HL,BC
 			// LD A,(BC)
 			0x0B => { let mut v = self.regs.get_bc(); v = self.dec_word(v); self.regs.set_bc(v); 2 } // DEC BC
 			0x0C => { let mut v = self.regs.c; v = self.inc_byte(v); self.regs.c = v; 1 } // INC C
@@ -50,7 +50,7 @@ impl CPU {
 			0x16 => { let v = self.fetch_byte(); self.regs.d = v; 2 } // LD D,d8
 			// RLA
 			// JR r8
-			// ADD HL,DE
+			0x19 => { let v = self.regs.get_de(); self.add_to_hl(v); 2 } // ADD HL,DE
 			// LD A,(DE)
 			0x1B => { let mut v = self.regs.get_de(); v = self.dec_word(v); self.regs.set_de(v); 2 } // DEC DE
 			0x1C => { let mut v = self.regs.e; v = self.inc_byte(v); self.regs.e = v; 1 } // INC E
@@ -67,7 +67,7 @@ impl CPU {
 			0x26 => { let v = self.fetch_byte(); self.regs.h = v; 2 } // LD H,d8
 			// DAA
 			// JR Z,r8
-			// ADD HL,HL
+			0x29 => { let v = self.regs.get_hl(); self.add_to_hl(v); 2 } // ADD HL,HL
 			// LD A,(HL+)
 			0x2B => { let mut v = self.regs.get_hl(); v = self.dec_word(v); self.regs.set_hl(v); 2 } // DEC HL
 			0x2C => { let mut v = self.regs.l; v = self.inc_byte(v); self.regs.l = v; 1 } // INC L
@@ -84,7 +84,7 @@ impl CPU {
 			// LD (HL),d8
 			// SCF
 			// JR C,r8
-			// ADD HL,SP
+			0x39 => { let v = self.regs.sp; self.add_to_hl(v); 2 } // ADD HL,SP
 			// LD A,(HL-)
 			0x3B => { let mut v = self.regs.sp; v = self.dec_word(v); self.regs.sp = v; 2 } // DEC SP
 			0x3C => { let mut v = self.regs.a; v = self.inc_byte(v); self.regs.a = v; 1 } // INC A
@@ -132,6 +132,20 @@ impl CPU {
 
 	fn dec_word(&mut self, value: u16) -> u16 {
 		value.wrapping_sub(1)
+	}
+
+	fn add_to_hl(&mut self, value: u16) {
+		let hl = self.regs.get_hl();
+		self.add_word(hl, value);
+		self.regs.set_hl(hl);
+	}
+
+	fn add_word(&mut self, lhs: u16, rhs: u16) -> u16 {
+		let result = lhs.wrapping_add(rhs);
+		self.regs.set_flag(N, false);
+		self.regs.set_flag(H, (lhs & 0x07FF) + (rhs & 0x07FF) > 0x07FF);
+		self.regs.set_flag(C, lhs > 0xFFFF - rhs);
+		result
 	}
 
 	// DEBUG
