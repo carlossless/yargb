@@ -31,15 +31,15 @@ impl CPU {
 			0x04 => { let mut v = self.regs.b; v = self.inc_byte(v); self.regs.b = v; 1 } // INC B
 			0x05 => { let mut v = self.regs.b; v = self.dec_byte(v); self.regs.b = v; 1 } // DEC B
 			0x06 => { let v = self.fetch_byte(); self.regs.b = v; 2 } // LD B,d8
-			// RLCA
-			// LD (a16),SP
+			0x07 => { self.rlca(); 1 } // RLCA
+			0x08 => { let v = self.regs.sp; let a = self.fetch_word(); self.mmu.write_word(a, v); 5 } // LD (a16),SP
 			0x09 => { let v = self.regs.get_bc(); self.add_to_hl(v); 2 } // ADD HL,BC
-			// LD A,(BC)
+			0x0A => { let a = self.regs.get_bc(); self.regs.a = self.mmu.read_byte(a); 2 } // LD A,(BC)
 			0x0B => { let mut v = self.regs.get_bc(); v = self.dec_word(v); self.regs.set_bc(v); 2 } // DEC BC
 			0x0C => { let mut v = self.regs.c; v = self.inc_byte(v); self.regs.c = v; 1 } // INC C
 			0x0D => { let mut v = self.regs.c; v = self.dec_byte(v); self.regs.c = v; 1 } // DEC C
 			0x0E => { let v = self.fetch_byte(); self.regs.c = v; 2 } // LD C,d8
-			// RRCA
+			0x0F => { self.rrca(); 1 } // RRCA
 
 			// STOP 0
 			0x11 => { let mut v = self.fetch_word(); self.regs.set_de(v); 3 } // LD DE,d16
@@ -51,7 +51,7 @@ impl CPU {
 			// RLA
 			// JR r8
 			0x19 => { let v = self.regs.get_de(); self.add_to_hl(v); 2 } // ADD HL,DE
-			// LD A,(DE)
+			0x1A => { let a = self.regs.get_de(); self.regs.a = self.mmu.read_byte(a); 2 } // LD A,(DE)
 			0x1B => { let mut v = self.regs.get_de(); v = self.dec_word(v); self.regs.set_de(v); 2 } // DEC DE
 			0x1C => { let mut v = self.regs.e; v = self.inc_byte(v); self.regs.e = v; 1 } // INC E
 			0x1D => { let mut v = self.regs.e; v = self.dec_byte(v); self.regs.e = v; 1 } // DEC E
@@ -79,9 +79,9 @@ impl CPU {
 			0x31 => { let mut v = self.fetch_word(); self.regs.sp = v; 3 } // LD SP,d16
 			// LD (HL-),A
 			0x33 => { let mut v = self.regs.sp; v = self.inc_word(v); self.regs.sp = v; 2 } // INC SP
-			// INC (HL)
-			// DEC (HL)
-			// LD (HL),d8
+			0x34 => { let a = self.regs.get_hl(); let mut v = self.mmu.read_byte(a); v = self.inc_byte(v); self.mmu.write_byte(a, v); 3 } // INC (HL)
+			0x35 => { let a = self.regs.get_hl(); let mut v = self.mmu.read_byte(a); v = self.dec_byte(v); self.mmu.write_byte(a, v); 3 } // DEC (HL)
+			0x36 => { let a = self.regs.get_hl(); let v = self.fetch_byte(); self.mmu.write_byte(a, v); 3 } // LD (HL),d8
 			// SCF
 			// JR C,r8
 			0x39 => { let v = self.regs.sp; self.add_to_hl(v); 2 } // ADD HL,SP
@@ -146,6 +146,24 @@ impl CPU {
 		self.regs.set_flag(H, (lhs & 0x07FF) + (rhs & 0x07FF) > 0x07FF);
 		self.regs.set_flag(C, lhs > 0xFFFF - rhs);
 		result
+	}
+
+	fn rlca(&mut self) {
+		let a = self.regs.a;
+		self.regs.set_flag(Z, false);
+		self.regs.set_flag(N, false);
+		self.regs.set_flag(H, false);
+		self.regs.set_flag(C, (a & (1 << 7)) > 0);
+		self.regs.a = a.rotate_left(1);
+	}
+
+	fn rrca(&mut self) {
+		let a = self.regs.a;
+		self.regs.set_flag(Z, false);
+		self.regs.set_flag(N, false);
+		self.regs.set_flag(H, false);
+		self.regs.set_flag(C, (a & 1) > 0);
+		self.regs.a = a.rotate_right(1);
 	}
 
 	// DEBUG
