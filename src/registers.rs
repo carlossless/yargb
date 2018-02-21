@@ -12,6 +12,13 @@ pub struct Registers {
     pub pc: u16,
 }
 
+#[repr(u8)]
+pub enum Flag {
+    Z = 1 << 7,
+    N = 1 << 6,
+    H = 1 << 5,
+    C = 1 << 4
+}
 
 impl Registers {
     pub fn new() -> Registers {
@@ -56,11 +63,11 @@ impl Registers {
         self.l = (value & 0xff) as u8;
     }
 
-    pub fn set_flag(&mut self, mask: u8, value: bool) {
-        if (value) {
-            self.f |= mask
+    pub fn set_flag(&mut self, mask: Flag, value: bool) {
+        if value {
+            self.f |= mask as u8
         } else {
-            self.f &= !mask
+            self.f &= !(mask as u8)
         }
     }
 

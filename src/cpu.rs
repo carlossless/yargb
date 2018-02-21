@@ -1,4 +1,5 @@
 use registers::Registers;
+use registers::Flag::{ Z, N, H, C };
 use mmu::MMU;
 
 pub struct CPU {
@@ -109,27 +110,27 @@ impl CPU {
 
 	// ALU
 
-	fn inc_byte(&mut self, mut value: u8) -> u8 {
+	fn inc_byte(&mut self, value: u8) -> u8 {
 		let result = value.wrapping_add(1);
-		self.regs.set_flag(1 << 7, result == 0); // Z
-		self.regs.set_flag(1 << 6, false); // N
-		self.regs.set_flag(1 << 5, (value & 0x0F) + 1 > 0x0F); // H
+		self.regs.set_flag(Z, result == 0);
+		self.regs.set_flag(N, false);
+		self.regs.set_flag(H, (value & 0x0F) + 1 > 0x0F);
 		result
 	}
 
-	fn inc_word(&mut self, mut value: u16) -> u16 {
+	fn inc_word(&mut self, value: u16) -> u16 {
 		value.wrapping_add(1)
 	}
 
-	fn dec_byte(&mut self, mut value: u8) -> u8 {
+	fn dec_byte(&mut self, value: u8) -> u8 {
 		let result = value.wrapping_sub(1);
-		self.regs.set_flag(1 << 7, result == 0); // Z
-		self.regs.set_flag(1 << 6, true); // N
-		self.regs.set_flag(1 << 5, (value & 0x0F) == 0x0F); // H
+		self.regs.set_flag(Z, result == 0);
+		self.regs.set_flag(N, true);
+		self.regs.set_flag(H, (value & 0x0F) == 0x0F);
 		result
 	}
 
-	fn dec_word(&mut self, mut value: u16) -> u16 {
+	fn dec_word(&mut self, value: u16) -> u16 {
 		value.wrapping_sub(1)
 	}
 
