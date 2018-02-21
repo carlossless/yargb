@@ -56,7 +56,7 @@ impl CPU {
 			0x1C => { let mut v = self.regs.e; v = self.inc_byte(v); self.regs.e = v; 1 } // INC E
 			0x1D => { let mut v = self.regs.e; v = self.dec_byte(v); self.regs.e = v; 1 } // DEC E
 			0x1E => { let v = self.fetch_byte(); self.regs.e = v; 2 } // LD E,d8
-			// RRA
+			0x1F => { self.rra(); 1 } // RRA
 			
 			// JR NZ, r8
 			0x21 => { let mut v = self.fetch_word(); self.regs.set_hl(v); 3 } // LD HL,d16
@@ -65,7 +65,7 @@ impl CPU {
 			0x24 => { let mut v = self.regs.h; v = self.inc_byte(v); self.regs.h = v; 1 } // INC H
 			0x25 => { let mut v = self.regs.h; v = self.dec_byte(v); self.regs.h = v; 1 } // DEC H
 			0x26 => { let v = self.fetch_byte(); self.regs.h = v; 2 } // LD H,d8
-			// DAA
+			ox27 => { self.daa(); 1 } // DAA
 			// JR Z,r8
 			0x29 => { let v = self.regs.get_hl(); self.add_to_hl(v); 2 } // ADD HL,HL
 			// LD A,(HL+)
@@ -148,6 +148,42 @@ impl CPU {
 		result
 	}
 
+	// TODO: using match here is unncessary... can be done more concisely by mutating through conditions
+	fn daa(&mut self) {
+		let n = self.regs.get_flag(N);
+		let h = self.regs.get_flag(H);
+		let mut c = self.regs.get_flag(C);
+		let mut a = self.regs.a;
+		let upper_digit = a >> 4;
+		let lower_digit = a & 0xF;
+		c = if n {
+			match (c, h, upper_digit, lower_digit) {
+				(false, false, 0x0...0x9, 0x0...0x9) => { false }
+				(false, false, 0x0...0x8, 0xA...0xF) => { a = a.wrapping_add(0x06); false }
+				(false, true,  0x0...0x9, 0x0...0x3) => { a = a.wrapping_add(0x06); false }
+				(false, false, 0xA...0xF, 0x0...0x9) => { a = a.wrapping_add(0x60); true }
+				(false, false, 0x9...0xF, 0xA...0xF) => { a = a.wrapping_add(0x66); true }
+				(false, true , 0xA...0xF, 0x0...0x3) => { a = a.wrapping_add(0x66); true }
+				(true , false, 0x0...0x2, 0x0...0x9) => { a = a.wrapping_add(0x60); true }
+				(true , false, 0x0...0x2, 0xA...0xF) => { a = a.wrapping_add(0x66); true }
+				(true , true , 0x0...0x3, 0x0...0x3) => { a = a.wrapping_add(0x66); true }
+				_ => { panic!("DAA should never reach this case") }
+			}
+		} else {
+			match (c, h, upper_digit, lower_digit) {
+				(false, false, 0x0...0x9, 0x0...0x9) => { false }
+				(false, true,  0x0...0x8, 0x6...0xF) => { a = a.wrapping_add(0xFA); false }
+				(false, false, 0x9...0xF, 0xA...0xF) => { a = a.wrapping_add(0xA0); true }
+				(true , true , 0xA...0xF, 0x0...0x3) => { a = a.wrapping_add(0x9A); true }
+				_ => { panic!("DAA should never reach this case") }
+			}
+		};
+		self.regs.set_flag(Z, a == 0);
+		self.regs.set_flag(H, 0);
+		self.regs.set_flag(C, c);
+		self.regs.a = a;
+	}
+
 	// Rotates
 
 	fn rlca(&mut self) {
@@ -159,7 +195,6 @@ impl CPU {
 		self.regs.a = a.rotate_left(1);
 	}
 
-	// TODO: shifting is better here.
 	fn rla(&mut self) {
 		let a = self.regs.a;
 		let c = self.regs.get_flag(C);
@@ -177,6 +212,16 @@ impl CPU {
 		self.regs.set_flag(H, false);
 		self.regs.set_flag(C, (a & 1) > 0);
 		self.regs.a = a.rotate_right(1);
+	}
+
+	fn rra(&mut self) {
+		let a = self.regs.a;
+		let c = self.regs.get_flag(C);
+		self.regs.set_flag(Z, false);
+		self.regs.set_flag(N, false);
+		self.regs.set_flag(H, false);
+		self.regs.set_flag(C, (a & 1) != 0);
+		self.regs.a = a >> 1 | (if c { 1 << 7 } else { 0 });
 	}
 
 	// DEBUG
