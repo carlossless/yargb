@@ -2,13 +2,125 @@ use registers::Registers;
 use registers::Flag::{ Z, N, H, C };
 use mmu::MMU;
 
+use std::mem;
+
 pub struct CPU {
 	regs: Registers,
 	mmu: MMU,
 	pub halted: bool
 }
 
+struct Operation {
+	execute: &'static Fn(&mut CPU) -> usize
+}
+
+macro_rules! dop {
+	($name:tt, $execute:expr) => (Operation {
+		execute: &|cpu| {
+			println!($name);
+		 	$execute(cpu)
+		}
+	});
+	($name:tt, u8, $execute:expr) => (Operation {
+		execute: &|cpu: &mut CPU| {
+			let value: u8 = cpu.fetch_byte();
+			println!($name, value);
+		 	$execute(cpu, value)
+		}
+	});
+	($name:tt, u16, $execute:expr) => (Operation {
+		execute: &|cpu: &mut CPU| {
+			let value: u16 = cpu.fetch_word();
+			println!($name, value);
+		 	$execute(cpu, value)
+		}
+	});
+}
+
+macro_rules! inc {
+	($register:ident) => (
+		|cpu: &mut CPU| { let mut v = cpu.regs.$register; v = cpu.inc_byte(v); cpu.regs.$register = v; 1 }
+	)
+}
+
+macro_rules! dec {
+	($register:ident) => (
+		|cpu: &mut CPU| { let mut v = cpu.regs.$register; v = cpu.dec_byte(v); cpu.regs.$register = v; 1 }
+	)
+}
+
+
 impl CPU {
+	const OPS: &'static [Operation] = &[
+		dop!("NOP" 	              , &CPU::nop), // 0x00 NOP
+		dop!("LD BC,{:#4X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.set_bc(value); 3 }), // 0x01 LD BC,d16
+		dop!("LD (BC),A"	      , &|cpu: &mut CPU| { cpu.mmu.write_byte(cpu.regs.get_bc(), cpu.regs.a); 2 }), // 0x02 LD (BC),A
+		dop!("INC BC"	          , &|cpu: &mut CPU| { let mut v = cpu.regs.get_bc(); v = cpu.inc_word(v); cpu.regs.set_bc(v); 2 }), // 0x03 INC BC
+		dop!("INC B"	          , &inc!(b)), // 0x04 INC B
+		dop!("DEC B"	          , &dec!(b)), // 0x05 DEC B
+		dop!("LD B,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.b = value; 2 }), // 0x06 LD B,d8
+		dop!("RLCA" 	 		  , &CPU::rotate_left_circular_accumulator), // 0x07 RLCA
+		dop!("LD ({:#4x}),SP", u16, &|cpu: &mut CPU, addr| { cpu.mmu.write_word(addr, cpu.regs.sp); 5 }), // 0x08 LD (a16),SP
+		dop!("ADD HL,BC"	      , &|cpu: &mut CPU| { let v = cpu.regs.get_bc(); cpu.add_to_hl(v); 2 }), // 0x09 ADD HL,BC
+		dop!("LD A,(BC)"	      , &|cpu: &mut CPU| { let a = cpu.regs.get_bc(); cpu.regs.a = cpu.mmu.read_byte(a); 2 }), // 0x0A LD A,(BC)
+		dop!("DEC BC"	          , &|cpu: &mut CPU| { let mut v = cpu.regs.get_bc(); v = cpu.dec_word(v); cpu.regs.set_bc(v); 2 }), // 0x0B DEC BC
+		dop!("INC C"	          , &inc!(c)), // 0x0C INC C
+		dop!("DEC C"	          , &dec!(c)), // 0x0D DEC C
+		dop!("LD C,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.c = value; 2 }), // 0x0E LD C,d8
+		dop!("RRCA" 			  , &CPU::rotate_right_circular_accumulator), // 0x0F RRCA
+
+		dop!("STOP" 	          , &CPU::unimplemented), // 0x10 STOP
+		dop!("LD DE,{:#4X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.set_de(value); 3 }), // 0x11 LD DE,d16
+		dop!("LD (DE),A"	      , &|cpu: &mut CPU| { cpu.mmu.write_byte(cpu.regs.get_de(), cpu.regs.a); 2 }), // 0x12 LD (DE),A
+		dop!("INC DE"	          , &|cpu: &mut CPU| { let mut v = cpu.regs.get_de(); v = cpu.inc_word(v); cpu.regs.set_de(v); 2 }), // 0x13 INC DE
+		dop!("INC D"	          , &inc!(d)), // 0x14 INC D
+		dop!("DEC D"	          , &dec!(d)), // 0x15 DEC D
+		dop!("LD D,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.d = value; 2 }), // 0x16 LD D,d8
+		dop!("RLA" 	 		      , &CPU::rotate_left_accumulator), // 0x07 RLA
+		dop!("JR {:#2X}"     , u8 , &CPU::unimplemented_8), // 0x18 JR r8
+		dop!("ADD HL,DE"	      , &|cpu: &mut CPU| { let v = cpu.regs.get_de(); cpu.add_to_hl(v); 2 }), // 0x19 ADD HL,DE
+		dop!("LD A,(DE)"	      , &|cpu: &mut CPU| { let a = cpu.regs.get_de(); cpu.regs.a = cpu.mmu.read_byte(a); 2 }), // 0x1A LD A,(DE)
+		dop!("DEC DE"	          , &|cpu: &mut CPU| { let mut v = cpu.regs.get_de(); v = cpu.dec_word(v); cpu.regs.set_de(v); 2 }), // 0x1B DEC DE
+		dop!("INC E"	          , &inc!(e)), // 0x1C INC E
+		dop!("DEC E"	          , &dec!(e)), // 0x1D DEC E
+		dop!("LD E,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.e = value; 2 }), // 0x1E LD E,d8
+		dop!("RRA" 			  	  , &CPU::rotate_right_accumulator), // 0x1F RRA
+
+		dop!("JR NZ,{:#2X}"  , u8 , &CPU::unimplemented_8), // 0x20 JR NZ,r8
+		dop!("LD HL,{:#4X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.set_hl(value); 3 }), // 0x21 LD HL,d16
+		dop!("LD (HL+),A"         , &CPU::unimplemented), // 0x22 LD (HL+),A
+		dop!("INC HL"	          , &|cpu: &mut CPU| { let mut v = cpu.regs.get_hl(); v = cpu.inc_word(v); cpu.regs.set_hl(v); 2 }), // 0x23 INC HL
+		dop!("INC H"	          , &inc!(h)), // 0x24 INC H
+		dop!("DEC H"	          , &dec!(h)), // 0x25 DEC H
+		dop!("LD H,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.h = value; 2 }), // 0x26 LD H,d8
+		dop!("DDA" 	 		      , &CPU::decimal_adjust_accumulator), // 0x27 DAA
+		dop!("JR Z,{:#2X}"   , u8 , &CPU::unimplemented_8), // 0x28 JR Z,r8
+		dop!("ADD HL,HL"	      , &|cpu: &mut CPU| { let v = cpu.regs.get_hl(); cpu.add_to_hl(v); 2 }), // 0x29 ADD HL,HL
+		dop!("LD A,(HL+)"         , &CPU::unimplemented), // 0x2A LD A,(HL+)
+		dop!("DEC HL"	          , &|cpu: &mut CPU| { let mut v = cpu.regs.get_hl(); v = cpu.dec_word(v); cpu.regs.set_hl(v); 2 }), // 0x2B DEC HL
+		dop!("INC L"	          , &inc!(l)), // 0x2C INC L
+		dop!("DEC L"	          , &dec!(l)), // 0x2D DEC L
+		dop!("LD L,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.l = value; 2 }), // 0x2E LD L,d8
+		dop!("CPL"   			  , &CPU::complement), // 0x2F CPL
+
+		dop!("JR NC,{:#2X}"  , u8 , &CPU::unimplemented_8), // 0x30 JR NC,r8
+		dop!("LD SP,{:#4X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.sp = value; 3 }), // 0x31 LD SP,d16
+		dop!("LD (HL-),A"         , &CPU::unimplemented), // 0x32 LD (HL-),A
+		dop!("INC SP"	          , &|cpu: &mut CPU| { let mut v = cpu.regs.sp; v = cpu.inc_word(v); cpu.regs.sp = v; 2 }), // 0x34 INC SP
+		dop!("INC (HL)"	          , &|cpu: &mut CPU| { let a = cpu.regs.get_hl(); let mut v = cpu.mmu.read_byte(a); v = cpu.inc_byte(v); cpu.mmu.write_byte(a, v); 3 }), // 0x34 INC (HL)
+		dop!("DEC (HL)"	          , &|cpu: &mut CPU| { let a = cpu.regs.get_hl(); let mut v = cpu.mmu.read_byte(a); v = cpu.dec_byte(v); cpu.mmu.write_byte(a, v); 3 }), // 0x35 DEC (HL)
+		dop!("LD (HL),{:#2X}", u8 , &|cpu: &mut CPU, value| { let a = cpu.regs.get_hl(); cpu.mmu.write_byte(a, value); 3 }), // 0x36 LD (HL),d8
+		dop!("SCF" 	 		      , &CPU::set_carry_flag), // 0x37 SCF
+		dop!("JR C,{:#2X}"   , u8 , &CPU::unimplemented_8), // 0x38 JR C,r8
+		dop!("ADD HL,SP"	      , &|cpu: &mut CPU| { let v = cpu.regs.sp; cpu.add_to_hl(v); 2 }), // 0x39 ADD HL,SP
+		dop!("LD A,(HL-)"         , &CPU::unimplemented), // 0x3A LD A,(HL-)
+		dop!("DEC SP"	          , &|cpu: &mut CPU| { let mut v = cpu.regs.sp; v = cpu.dec_word(v); cpu.regs.sp = v; 2 }), // 0x3B DEC SP
+		dop!("INC A"	          , &inc!(a)), // 0x3C INC A
+		dop!("DEC A"	          , &dec!(a)), // 0x3D DEC A
+		dop!("LD A,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.a = value; 2 }), // 0x3E LD A,d8
+		dop!("CCF"   			  , &CPU::complement_carry_flag), // 0x3F CCF
+	];
+
     pub fn new(rom_data: &[u8]) -> CPU {
         CPU {
         	regs: Registers::new(),
@@ -22,78 +134,10 @@ impl CPU {
 	}
 
 	fn process(&mut self) -> usize {
-		let op = self.fetch_byte();
-		match op {
-			0x00 => { 1 }  // NOP
-			0x01 => { let v = self.fetch_word(); self.regs.set_bc(v); 3 } // LD BC,nn
-			0x02 => { self.mmu.write_byte(self.regs.get_bc(), self.regs.a); 2 } // LD (BC),A
-			0x03 => { let mut v = self.regs.get_bc(); v = self.inc_word(v); self.regs.set_bc(v); 2 } // INC BC
-			0x04 => { let mut v = self.regs.b; v = self.inc_byte(v); self.regs.b = v; 1 } // INC B
-			0x05 => { let mut v = self.regs.b; v = self.dec_byte(v); self.regs.b = v; 1 } // DEC B
-			0x06 => { let v = self.fetch_byte(); self.regs.b = v; 2 } // LD B,d8
-			0x07 => { self.rotate_left_circular_accumulator(); 1 } // RLCA
-			0x08 => { let v = self.regs.sp; let a = self.fetch_word(); self.mmu.write_word(a, v); 5 } // LD (a16),SP
-			0x09 => { let v = self.regs.get_bc(); self.add_to_hl(v); 2 } // ADD HL,BC
-			0x0A => { let a = self.regs.get_bc(); self.regs.a = self.mmu.read_byte(a); 2 } // LD A,(BC)
-			0x0B => { let mut v = self.regs.get_bc(); v = self.dec_word(v); self.regs.set_bc(v); 2 } // DEC BC
-			0x0C => { let mut v = self.regs.c; v = self.inc_byte(v); self.regs.c = v; 1 } // INC C
-			0x0D => { let mut v = self.regs.c; v = self.dec_byte(v); self.regs.c = v; 1 } // DEC C
-			0x0E => { let v = self.fetch_byte(); self.regs.c = v; 2 } // LD C,d8
-			0x0F => { self.rotate_right_circular_accumulator(); 1 } // RRCA
-
-			// STOP 0
-			0x11 => { let mut v = self.fetch_word(); self.regs.set_de(v); 3 } // LD DE,d16
-			0x12 => { self.mmu.write_byte(self.regs.get_de(), self.regs.a); 3 } // LD (DE),A
-			0x13 => { let mut v = self.regs.get_de(); v = self.inc_word(v); self.regs.set_de(v); 2 } // INC DE
-			0x14 => { let mut v = self.regs.d; v = self.inc_byte(v); self.regs.d = v; 1 } // INC D
-			0x15 => { let mut v = self.regs.d; v = self.dec_byte(v); self.regs.d = v; 1 } // DEC D
-			0x16 => { let v = self.fetch_byte(); self.regs.d = v; 2 } // LD D,d8
-			0x17 => { self.rotate_left_accumulator(); 1 } // RLA
-			// JR r8
-			0x19 => { let v = self.regs.get_de(); self.add_to_hl(v); 2 } // ADD HL,DE
-			0x1A => { let a = self.regs.get_de(); self.regs.a = self.mmu.read_byte(a); 2 } // LD A,(DE)
-			0x1B => { let mut v = self.regs.get_de(); v = self.dec_word(v); self.regs.set_de(v); 2 } // DEC DE
-			0x1C => { let mut v = self.regs.e; v = self.inc_byte(v); self.regs.e = v; 1 } // INC E
-			0x1D => { let mut v = self.regs.e; v = self.dec_byte(v); self.regs.e = v; 1 } // DEC E
-			0x1E => { let v = self.fetch_byte(); self.regs.e = v; 2 } // LD E,d8
-			0x1F => { self.rotate_right_accumulator(); 1 } // RRA
-			
-			// JR NZ, r8
-			0x21 => { let mut v = self.fetch_word(); self.regs.set_hl(v); 3 } // LD HL,d16
-			// LD (HL+),A
-			0x23 => { let mut v = self.regs.get_hl(); v = self.inc_word(v); self.regs.set_hl(v); 2 } // INC HL
-			0x24 => { let mut v = self.regs.h; v = self.inc_byte(v); self.regs.h = v; 1 } // INC H
-			0x25 => { let mut v = self.regs.h; v = self.dec_byte(v); self.regs.h = v; 1 } // DEC H
-			0x26 => { let v = self.fetch_byte(); self.regs.h = v; 2 } // LD H,d8
-			0x27 => { self.decimal_adjust_accumulator(); 1 } // DAA
-			// JR Z,r8
-			0x29 => { let v = self.regs.get_hl(); self.add_to_hl(v); 2 } // ADD HL,HL
-			// LD A,(HL+)
-			0x2B => { let mut v = self.regs.get_hl(); v = self.dec_word(v); self.regs.set_hl(v); 2 } // DEC HL
-			0x2C => { let mut v = self.regs.l; v = self.inc_byte(v); self.regs.l = v; 1 } // INC L
-			0x2D => { let mut v = self.regs.l; v = self.dec_byte(v); self.regs.l = v; 1 } // DEC L
-			0x2E => { let v = self.fetch_byte(); self.regs.l = v; 2 } // LD E,d8
-			0x2F => { self.complement(); 1 } // CPL
-			
-			// JR NC,r8
-			0x31 => { let mut v = self.fetch_word(); self.regs.sp = v; 3 } // LD SP,d16
-			// LD (HL-),A
-			0x33 => { let mut v = self.regs.sp; v = self.inc_word(v); self.regs.sp = v; 2 } // INC SP
-			0x34 => { let a = self.regs.get_hl(); let mut v = self.mmu.read_byte(a); v = self.inc_byte(v); self.mmu.write_byte(a, v); 3 } // INC (HL)
-			0x35 => { let a = self.regs.get_hl(); let mut v = self.mmu.read_byte(a); v = self.dec_byte(v); self.mmu.write_byte(a, v); 3 } // DEC (HL)
-			0x36 => { let a = self.regs.get_hl(); let v = self.fetch_byte(); self.mmu.write_byte(a, v); 3 } // LD (HL),d8
-			0x37 => { self.set_carry_flag(); 1 } // SCF
-			// JR C,r8
-			0x39 => { let v = self.regs.sp; self.add_to_hl(v); 2 } // ADD HL,SP
-			// LD A,(HL-)
-			0x3B => { let mut v = self.regs.sp; v = self.dec_word(v); self.regs.sp = v; 2 } // DEC SP
-			0x3C => { let mut v = self.regs.a; v = self.inc_byte(v); self.regs.a = v; 1 } // INC A
-			0x3D => { let mut v = self.regs.a; v = self.dec_byte(v); self.regs.a = v; 1 } // DEC A
-			0x3E => { let v = self.fetch_byte(); self.regs.a = v; 2 } // LD A,d8
-			0x3F => { self.complement_carry_flag(); 1 } // CCF
-			
-			other => panic!("op {:2X} has not been implemented.", other)
-		}
+		let op_code = self.fetch_byte();
+		let op = &CPU::OPS[op_code as usize];
+		let op_impl = op.execute;
+		op_impl(self)
 	}
 
 	fn fetch_byte(&mut self) -> u8 {
@@ -106,6 +150,20 @@ impl CPU {
 		let w = self.mmu.read_word(self.regs.pc);
 		self.regs.pc += 2;
 		w
+	}
+
+	// Misc/Flow Control
+
+	fn nop(&mut self) -> usize {
+		1
+	}
+
+	fn unimplemented(&mut self) -> usize {
+		unimplemented!("op is unimplemented")
+	}
+
+	fn unimplemented_8(&mut self, value: u8) -> usize {
+		unimplemented!("op is unimplemented")
 	}
 
 	// ALU
@@ -149,7 +207,7 @@ impl CPU {
 	}
 
 	// TODO: using match here is unncessary... can be done more concisely by mutating through conditions
-	fn decimal_adjust_accumulator(&mut self) {
+	fn decimal_adjust_accumulator(&mut self) -> usize {
 		let n = self.regs.get_flag(N);
 		let h = self.regs.get_flag(H);
 		let mut c = self.regs.get_flag(C);
@@ -182,39 +240,44 @@ impl CPU {
 		self.regs.set_flag(H, false);
 		self.regs.set_flag(C, c);
 		self.regs.a = a;
+		1
 	}
 
-	fn complement(&mut self) {
+	fn complement(&mut self) -> usize {
 		self.regs.set_flag(N, true);
 		self.regs.set_flag(H, true);
 		self.regs.a = !self.regs.a;
+		1
 	}
 
-	fn set_carry_flag(&mut self) {
+	fn set_carry_flag(&mut self) -> usize {
 		self.regs.set_flag(N, false);
 		self.regs.set_flag(H, false);
 		self.regs.set_flag(C, true);
+		1
 	}
 
-	fn complement_carry_flag(&mut self) {
+	fn complement_carry_flag(&mut self) -> usize {
 		let c = !self.regs.get_flag(C);
 		self.regs.set_flag(N, false);
 		self.regs.set_flag(H, false);
 		self.regs.set_flag(C, c);
+		1
 	}
 
 	// Rotates
 
-	fn rotate_left_circular_accumulator(&mut self) {
+	fn rotate_left_circular_accumulator(&mut self) -> usize {
 		let a = self.regs.a;
 		self.regs.set_flag(Z, false);
 		self.regs.set_flag(N, false);
 		self.regs.set_flag(H, false);
 		self.regs.set_flag(C, (a & (1 << 7)) != 0);
 		self.regs.a = a.rotate_left(1);
+		1
 	}
 
-	fn rotate_left_accumulator(&mut self) {
+	fn rotate_left_accumulator(&mut self) -> usize {
 		let a = self.regs.a;
 		let c = self.regs.get_flag(C);
 		self.regs.set_flag(Z, false);
@@ -222,18 +285,20 @@ impl CPU {
 		self.regs.set_flag(H, false);
 		self.regs.set_flag(C, (a & (1 << 7)) != 0);
 		self.regs.a = a << 1 | (if c { 1 } else { 0 });
+		1
 	}
 
-	fn rotate_right_circular_accumulator(&mut self) {
+	fn rotate_right_circular_accumulator(&mut self) -> usize {
 		let a = self.regs.a;
 		self.regs.set_flag(Z, false);
 		self.regs.set_flag(N, false);
 		self.regs.set_flag(H, false);
 		self.regs.set_flag(C, (a & 1) > 0);
 		self.regs.a = a.rotate_right(1);
+		1
 	}
 
-	fn rotate_right_accumulator(&mut self) {
+	fn rotate_right_accumulator(&mut self) -> usize {
 		let a = self.regs.a;
 		let c = self.regs.get_flag(C);
 		self.regs.set_flag(Z, false);
@@ -241,6 +306,7 @@ impl CPU {
 		self.regs.set_flag(H, false);
 		self.regs.set_flag(C, (a & 1) != 0);
 		self.regs.a = a >> 1 | (if c { 1 << 7 } else { 0 });
+		1
 	}
 
 	// DEBUG
