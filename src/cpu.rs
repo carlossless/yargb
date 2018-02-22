@@ -1,8 +1,7 @@
 use registers::Registers;
 use registers::Flag::{ Z, N, H, C };
+use registers::WordRegister::{ BC, DE, HL, SP };
 use mmu::MMU;
-
-use std::mem;
 
 pub struct CPU {
     regs: Registers,
@@ -37,15 +36,27 @@ macro_rules! dop {
     });
 }
 
-macro_rules! inc {
+macro_rules! inc_byte {
     ($register:ident) => (
-        |cpu: &mut CPU| { let mut v = cpu.regs.$register; v = cpu.inc_byte(v); cpu.regs.$register = v; 1 }
+        |cpu: &mut CPU| { let mut v = cpu.regs.$register; cpu.inc_byte(&mut v); cpu.regs.$register = v; 1 }
     )
 }
 
-macro_rules! dec {
+macro_rules! dec_byte {
     ($register:ident) => (
-        |cpu: &mut CPU| { let mut v = cpu.regs.$register; v = cpu.dec_byte(v); cpu.regs.$register = v; 1 }
+        |cpu: &mut CPU| { let mut v = cpu.regs.$register; cpu.dec_byte(&mut v); cpu.regs.$register = v; 1 }
+    )
+}
+
+macro_rules! inc_word {
+    ($register:ident) => (
+        |cpu: &mut CPU| { let mut v = cpu.regs.get($register); cpu.inc_word(&mut v); cpu.regs.set($register, v); 2 }
+    )
+}
+
+macro_rules! dec_word {
+    ($register:ident) => (
+        |cpu: &mut CPU| { let mut v = cpu.regs.get($register); cpu.dec_word(&mut v); cpu.regs.set($register, v); 2 }
     )
 }
 
@@ -55,68 +66,68 @@ impl CPU {
         dop!("NOP"                , &CPU::nop), // 0x00 NOP
         dop!("LD BC,{:#4X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.set_bc(value); 3 }), // 0x01 LD BC,d16
         dop!("LD (BC),A"          , &|cpu: &mut CPU| { cpu.mmu.write_byte(cpu.regs.get_bc(), cpu.regs.a); 2 }), // 0x02 LD (BC),A
-        dop!("INC BC"             , &|cpu: &mut CPU| { let mut v = cpu.regs.get_bc(); v = cpu.inc_word(v); cpu.regs.set_bc(v); 2 }), // 0x03 INC BC
-        dop!("INC B"              , &inc!(b)), // 0x04 INC B
-        dop!("DEC B"              , &dec!(b)), // 0x05 DEC B
+        dop!("INC BC"             , &inc_word!(BC)), // 0x03 INC BC
+        dop!("INC B"              , &inc_byte!(b)), // 0x04 INC B
+        dop!("DEC B"              , &dec_byte!(b)), // 0x05 DEC B
         dop!("LD B,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.b = value; 2 }), // 0x06 LD B,d8
         dop!("RLCA"               , &CPU::rotate_left_circular_accumulator), // 0x07 RLCA
         dop!("LD ({:#4x}),SP", u16, &|cpu: &mut CPU, addr| { cpu.mmu.write_word(addr, cpu.regs.sp); 5 }), // 0x08 LD (a16),SP
         dop!("ADD HL,BC"          , &|cpu: &mut CPU| { let v = cpu.regs.get_bc(); cpu.add_to_hl(v); 2 }), // 0x09 ADD HL,BC
         dop!("LD A,(BC)"          , &|cpu: &mut CPU| { let a = cpu.regs.get_bc(); cpu.regs.a = cpu.mmu.read_byte(a); 2 }), // 0x0A LD A,(BC)
-        dop!("DEC BC"             , &|cpu: &mut CPU| { let mut v = cpu.regs.get_bc(); v = cpu.dec_word(v); cpu.regs.set_bc(v); 2 }), // 0x0B DEC BC
-        dop!("INC C"              , &inc!(c)), // 0x0C INC C
-        dop!("DEC C"              , &dec!(c)), // 0x0D DEC C
+        dop!("DEC BC"             , &dec_word!(BC)), // 0x0B DEC BC
+        dop!("INC C"              , &inc_byte!(c)), // 0x0C INC C
+        dop!("DEC C"              , &dec_byte!(c)), // 0x0D DEC C
         dop!("LD C,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.c = value; 2 }), // 0x0E LD C,d8
         dop!("RRCA"               , &CPU::rotate_right_circular_accumulator), // 0x0F RRCA
 
         dop!("STOP"               , &CPU::unimplemented), // 0x10 STOP
         dop!("LD DE,{:#4X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.set_de(value); 3 }), // 0x11 LD DE,d16
         dop!("LD (DE),A"          , &|cpu: &mut CPU| { cpu.mmu.write_byte(cpu.regs.get_de(), cpu.regs.a); 2 }), // 0x12 LD (DE),A
-        dop!("INC DE"             , &|cpu: &mut CPU| { let mut v = cpu.regs.get_de(); v = cpu.inc_word(v); cpu.regs.set_de(v); 2 }), // 0x13 INC DE
-        dop!("INC D"              , &inc!(d)), // 0x14 INC D
-        dop!("DEC D"              , &dec!(d)), // 0x15 DEC D
+        dop!("INC DE"             , &inc_word!(DE)), // 0x13 INC DE
+        dop!("INC D"              , &inc_byte!(d)), // 0x14 INC D
+        dop!("DEC D"              , &dec_byte!(d)), // 0x15 DEC D
         dop!("LD D,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.d = value; 2 }), // 0x16 LD D,d8
         dop!("RLA"                , &CPU::rotate_left_accumulator), // 0x07 RLA
         dop!("JR {:#2X}"     , u8 , &CPU::unimplemented_8), // 0x18 JR r8
         dop!("ADD HL,DE"          , &|cpu: &mut CPU| { let v = cpu.regs.get_de(); cpu.add_to_hl(v); 2 }), // 0x19 ADD HL,DE
         dop!("LD A,(DE)"          , &|cpu: &mut CPU| { let a = cpu.regs.get_de(); cpu.regs.a = cpu.mmu.read_byte(a); 2 }), // 0x1A LD A,(DE)
-        dop!("DEC DE"             , &|cpu: &mut CPU| { let mut v = cpu.regs.get_de(); v = cpu.dec_word(v); cpu.regs.set_de(v); 2 }), // 0x1B DEC DE
-        dop!("INC E"              , &inc!(e)), // 0x1C INC E
-        dop!("DEC E"              , &dec!(e)), // 0x1D DEC E
+        dop!("DEC DE"             , &dec_word!(DE)), // 0x1B DEC DE
+        dop!("INC E"              , &inc_byte!(e)), // 0x1C INC E
+        dop!("DEC E"              , &dec_byte!(e)), // 0x1D DEC E
         dop!("LD E,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.e = value; 2 }), // 0x1E LD E,d8
         dop!("RRA"                , &CPU::rotate_right_accumulator), // 0x1F RRA
 
         dop!("JR NZ,{:#2X}"  , u8 , &CPU::unimplemented_8), // 0x20 JR NZ,r8
         dop!("LD HL,{:#4X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.set_hl(value); 3 }), // 0x21 LD HL,d16
         dop!("LD (HL+),A"         , &CPU::unimplemented), // 0x22 LD (HL+),A
-        dop!("INC HL"             , &|cpu: &mut CPU| { let mut v = cpu.regs.get_hl(); v = cpu.inc_word(v); cpu.regs.set_hl(v); 2 }), // 0x23 INC HL
-        dop!("INC H"              , &inc!(h)), // 0x24 INC H
-        dop!("DEC H"              , &dec!(h)), // 0x25 DEC H
+        dop!("INC HL"             , &inc_word!(HL)), // 0x23 INC HL
+        dop!("INC H"              , &inc_byte!(h)), // 0x24 INC H
+        dop!("DEC H"              , &dec_byte!(h)), // 0x25 DEC H
         dop!("LD H,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.h = value; 2 }), // 0x26 LD H,d8
         dop!("DDA"                , &CPU::decimal_adjust_accumulator), // 0x27 DAA
         dop!("JR Z,{:#2X}"   , u8 , &CPU::unimplemented_8), // 0x28 JR Z,r8
         dop!("ADD HL,HL"          , &|cpu: &mut CPU| { let v = cpu.regs.get_hl(); cpu.add_to_hl(v); 2 }), // 0x29 ADD HL,HL
         dop!("LD A,(HL+)"         , &CPU::unimplemented), // 0x2A LD A,(HL+)
-        dop!("DEC HL"             , &|cpu: &mut CPU| { let mut v = cpu.regs.get_hl(); v = cpu.dec_word(v); cpu.regs.set_hl(v); 2 }), // 0x2B DEC HL
-        dop!("INC L"              , &inc!(l)), // 0x2C INC L
-        dop!("DEC L"              , &dec!(l)), // 0x2D DEC L
+        dop!("DEC HL"             , &dec_word!(HL)), // 0x2B DEC HL
+        dop!("INC L"              , &inc_byte!(l)), // 0x2C INC L
+        dop!("DEC L"              , &dec_byte!(l)), // 0x2D DEC L
         dop!("LD L,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.l = value; 2 }), // 0x2E LD L,d8
         dop!("CPL"                , &CPU::complement), // 0x2F CPL
 
         dop!("JR NC,{:#2X}"  , u8 , &CPU::unimplemented_8), // 0x30 JR NC,r8
         dop!("LD SP,{:#4X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.sp = value; 3 }), // 0x31 LD SP,d16
         dop!("LD (HL-),A"         , &CPU::unimplemented), // 0x32 LD (HL-),A
-        dop!("INC SP"             , &|cpu: &mut CPU| { let mut v = cpu.regs.sp; v = cpu.inc_word(v); cpu.regs.sp = v; 2 }), // 0x34 INC SP
-        dop!("INC (HL)"           , &|cpu: &mut CPU| { let a = cpu.regs.get_hl(); let mut v = cpu.mmu.read_byte(a); v = cpu.inc_byte(v); cpu.mmu.write_byte(a, v); 3 }), // 0x34 INC (HL)
-        dop!("DEC (HL)"           , &|cpu: &mut CPU| { let a = cpu.regs.get_hl(); let mut v = cpu.mmu.read_byte(a); v = cpu.dec_byte(v); cpu.mmu.write_byte(a, v); 3 }), // 0x35 DEC (HL)
+        dop!("INC SP"             , &inc_word!(SP)), // 0x34 INC SP
+        dop!("INC (HL)"           , &|cpu: &mut CPU| { let a = cpu.regs.get_hl(); let mut v = cpu.mmu.read_byte(a); cpu.inc_byte(&mut v); cpu.mmu.write_byte(a, v); 3 }), // 0x34 INC (HL)
+        dop!("DEC (HL)"           , &|cpu: &mut CPU| { let a = cpu.regs.get_hl(); let mut v = cpu.mmu.read_byte(a); cpu.dec_byte(&mut v); cpu.mmu.write_byte(a, v); 3 }), // 0x35 DEC (HL)
         dop!("LD (HL),{:#2X}", u8 , &|cpu: &mut CPU, value| { let a = cpu.regs.get_hl(); cpu.mmu.write_byte(a, value); 3 }), // 0x36 LD (HL),d8
         dop!("SCF"                , &CPU::set_carry_flag), // 0x37 SCF
         dop!("JR C,{:#2X}"   , u8 , &CPU::unimplemented_8), // 0x38 JR C,r8
         dop!("ADD HL,SP"          , &|cpu: &mut CPU| { let v = cpu.regs.sp; cpu.add_to_hl(v); 2 }), // 0x39 ADD HL,SP
         dop!("LD A,(HL-)"         , &CPU::unimplemented), // 0x3A LD A,(HL-)
-        dop!("DEC SP"             , &|cpu: &mut CPU| { let mut v = cpu.regs.sp; v = cpu.dec_word(v); cpu.regs.sp = v; 2 }), // 0x3B DEC SP
-        dop!("INC A"              , &inc!(a)), // 0x3C INC A
-        dop!("DEC A"              , &dec!(a)), // 0x3D DEC A
+        dop!("DEC SP"             , &dec_word!(SP)), // 0x3B DEC SP
+        dop!("INC A"              , &inc_byte!(a)), // 0x3C INC A
+        dop!("DEC A"              , &dec_byte!(a)), // 0x3D DEC A
         dop!("LD A,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.a = value; 2 }), // 0x3E LD A,d8
         dop!("CCF"                , &CPU::complement_carry_flag), // 0x3F CCF
     ];
@@ -162,34 +173,34 @@ impl CPU {
         unimplemented!("op is unimplemented")
     }
 
-    fn unimplemented_8(&mut self, value: u8) -> usize {
+    fn unimplemented_8(&mut self, _value: u8) -> usize {
         unimplemented!("op is unimplemented")
     }
 
     // ALU
 
-    fn inc_byte(&mut self, value: u8) -> u8 {
+    fn inc_byte(&mut self, value: &mut u8) {
         let result = value.wrapping_add(1);
         self.regs.set_flag(Z, result == 0);
         self.regs.set_flag(N, false);
-        self.regs.set_flag(H, (value & 0x0F) + 1 > 0x0F);
-        result
+        self.regs.set_flag(H, (*value & 0x0F) + 1 > 0x0F);
+        *value = result;
     }
 
-    fn inc_word(&mut self, value: u16) -> u16 {
-        value.wrapping_add(1)
+    fn inc_word(&mut self, value: &mut u16) {
+        *value = value.wrapping_add(1)
     }
 
-    fn dec_byte(&mut self, value: u8) -> u8 {
+    fn dec_byte(&mut self, value: &mut u8) {
         let result = value.wrapping_sub(1);
         self.regs.set_flag(Z, result == 0);
         self.regs.set_flag(N, true);
-        self.regs.set_flag(H, (value & 0x0F) == 0x0F);
-        result
+        self.regs.set_flag(H, (*value & 0x0F) == 0x0F);
+        *value = result;
     }
 
-    fn dec_word(&mut self, value: u16) -> u16 {
-        value.wrapping_sub(1)
+    fn dec_word(&mut self, value: &mut u16) {
+        *value = value.wrapping_sub(1)
     }
 
     fn add_to_hl(&mut self, value: u16) {

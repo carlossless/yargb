@@ -25,7 +25,7 @@ impl MMU {
         (self.read_byte(addr) as u16) | ((self.read_byte(addr + 1) as u16) << 8)
     }
 
-    pub fn write_byte(&self, addr: u16, value: u8) {
+    pub fn write_byte(&self, addr: u16, _value: u8) {
         match addr {
             other => panic!("MMU for {:2X} is not implemented", other)
         }

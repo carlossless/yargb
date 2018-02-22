@@ -5,7 +5,6 @@ mod mmu;
 mod cpu;
 mod registers;
 
-use std::io;
 use std::io::prelude::*;
 use std::fs::File;
 use cpu::CPU;
