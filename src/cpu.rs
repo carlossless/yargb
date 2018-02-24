@@ -139,6 +139,53 @@ macro_rules! sbc {
     )
 }
 
+macro_rules! and {
+    ($source_register:ident, $target_register:ident) => (
+        |cpu: &mut CPU| {
+            let x = cpu.regs.$source_register;
+            let y = cpu.regs.$target_register;
+            let r = cpu.alu_and(v, addend);
+            cpu.regs.$target_register = r;
+            1
+        }
+    )
+}
+
+macro_rules! xor {
+    ($source_register:ident, $target_register:ident) => (
+        |cpu: &mut CPU| {
+            let x = cpu.regs.$source_register;
+            let y = cpu.regs.$target_register;
+            let r = cpu.alu_xor(v, addend);
+            cpu.regs.$target_register = r;
+            1
+        }
+    )
+}
+
+macro_rules! or {
+    ($source_register:ident, $target_register:ident) => (
+        |cpu: &mut CPU| {
+            let x = cpu.regs.$source_register;
+            let y = cpu.regs.$target_register;
+            let r = cpu.alu_or(v, addend);
+            cpu.regs.$target_register = r;
+            1
+        }
+    )
+}
+
+macro_rules! cp {
+    ($source_register:ident, $target_register:ident) => (
+        |cpu: &mut CPU| {
+            let addend = cpu.regs.$source_register;
+            let mut v = cpu.regs.$target_register;
+            cpu.alu_cp(v, addend);
+            1
+        }
+    )
+}
+
 impl CPU {
     const OPS: &'static [Operation] = &[
         dop!("NOP"                , &CPU::nop), // 0x00 NOP
@@ -310,6 +357,23 @@ impl CPU {
         dop!("SBC A,L"            , &sbc!(a,l)),
         dop!("SBC A,(HL)"         , &CPU::unimplemented),
         dop!("SBC A,A"            , &sbc!(a,a)),
+
+        dop!("AND A,B"            , &and!(a,b)),
+        dop!("AND A,C"            , &and!(a,c)),
+        dop!("AND A,D"            , &and!(a,d)),
+        dop!("AND A,E"            , &and!(a,e)),
+        dop!("AND A,H"            , &and!(a,h)),
+        dop!("AND A,L"            , &and!(a,l)),
+        dop!("AND A,(HL)"         , &CPU::unimplemented),
+        dop!("AND A,A"            , &xor!(a,a)),
+        dop!("CP A,B"             , &cp!(a,b)),
+        dop!("CP A,C"             , &cp!(a,c)),
+        dop!("CP A,D"             , &cp!(a,d)),
+        dop!("CP A,E"             , &cp!(a,e)),
+        dop!("CP A,H"             , &cp!(a,h)),
+        dop!("CP A,L"             , &cp!(a,l)),
+        dop!("CP A,(HL)"          , &CPU::unimplemented),
+        dop!("CP A,A"             , &cp!(a,a)),
     ];
 
     pub fn new(rom_data: &[u8]) -> CPU {
@@ -433,6 +497,37 @@ impl CPU {
         self.regs.set_flag(H, ((lhs & 0x0F) < (rhs & 0x0F).wrapping_add(carry)));
         self.regs.set_flag(C, (lhs as u16) < (rhs as u16) + (carry as u16));
         result
+    }
+
+    fn alu_and(&mut self, lhs: u8, rhs: u8) -> u8 {
+        let result = lhs & rhs;
+        self.regs.set_flag(Z, result == 0);
+        self.regs.set_flag(N, false);
+        self.regs.set_flag(H, true);
+        self.regs.set_flag(C, false);
+        result
+    }
+
+    fn alu_xor(&mut self, lhs: u8, rhs: u8) -> u8 {
+        let result = lhs ^ rhs;
+        self.regs.set_flag(Z, result == 0);
+        self.regs.set_flag(N, false);
+        self.regs.set_flag(H, false);
+        self.regs.set_flag(C, false);
+        result
+    }
+
+    fn alu_or(&mut self, lhs: u8, rhs: u8) -> u8 {
+        let result = lhs ^ rhs;
+        self.regs.set_flag(Z, result == 0);
+        self.regs.set_flag(N, false);
+        self.regs.set_flag(H, false);
+        self.regs.set_flag(C, false);
+        result
+    }
+
+    fn alu_cp(&mut self, lhs: u8, rhs: u8) {
+        self.sub_byte(lhs, rhs);
     }
 
     // TODO: using match here is unnecessary... can be done more concisely by mutating through conditions
