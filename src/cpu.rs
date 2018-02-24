@@ -144,7 +144,7 @@ macro_rules! and {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
             let y = cpu.regs.$target_register;
-            let r = cpu.alu_and(v, addend);
+            let r = cpu.alu_and(x, y);
             cpu.regs.$target_register = r;
             1
         }
@@ -156,7 +156,7 @@ macro_rules! xor {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
             let y = cpu.regs.$target_register;
-            let r = cpu.alu_xor(v, addend);
+            let r = cpu.alu_xor(x, y);
             cpu.regs.$target_register = r;
             1
         }
@@ -168,7 +168,7 @@ macro_rules! or {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
             let y = cpu.regs.$target_register;
-            let r = cpu.alu_or(v, addend);
+            let r = cpu.alu_or(x, y);
             cpu.regs.$target_register = r;
             1
         }
@@ -178,9 +178,9 @@ macro_rules! or {
 macro_rules! cp {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
-            let addend = cpu.regs.$source_register;
-            let mut v = cpu.regs.$target_register;
-            cpu.alu_cp(v, addend);
+            let x = cpu.regs.$source_register;
+            let y = cpu.regs.$target_register;
+            cpu.alu_cp(x, y);
             1
         }
     )
@@ -366,6 +366,23 @@ impl CPU {
         dop!("AND A,L"            , &and!(a,l)),
         dop!("AND A,(HL)"         , &CPU::unimplemented),
         dop!("AND A,A"            , &xor!(a,a)),
+        dop!("XOR A,B"            , &xor!(a,b)),
+        dop!("XOR A,C"            , &xor!(a,c)),
+        dop!("XOR A,D"            , &xor!(a,d)),
+        dop!("XOR A,E"            , &xor!(a,e)),
+        dop!("XOR A,H"            , &xor!(a,h)),
+        dop!("XOR A,L"            , &xor!(a,l)),
+        dop!("XOR A,(HL)"         , &CPU::unimplemented),
+        dop!("XOR A,A"            , &xor!(a,a)),
+
+        dop!("OR A,B"             , &or!(a,b)),
+        dop!("OR A,C"             , &or!(a,c)),
+        dop!("OR A,D"             , &or!(a,d)),
+        dop!("OR A,E"             , &or!(a,e)),
+        dop!("OR A,H"             , &or!(a,h)),
+        dop!("OR A,L"             , &or!(a,l)),
+        dop!("OR A,(HL)"          , &CPU::unimplemented),
+        dop!("OR A,A"             , &or!(a,a)),
         dop!("CP A,B"             , &cp!(a,b)),
         dop!("CP A,C"             , &cp!(a,c)),
         dop!("CP A,D"             , &cp!(a,d)),
@@ -374,6 +391,75 @@ impl CPU {
         dop!("CP A,L"             , &cp!(a,l)),
         dop!("CP A,(HL)"          , &CPU::unimplemented),
         dop!("CP A,A"             , &cp!(a,a)),
+
+        dop!("RET NZ"             , &CPU::stack_ret_nz),
+        dop!("POP BC"             , &CPU::unimplemented),
+        dop!("JP NZ,{:#4X}"  , u16, &CPU::jump_nz),
+        dop!("JP {:#4X}"     , u16, &CPU::jump),
+        dop!("CALL NZ,{:#4X}", u16, &CPU::stack_call_nz),
+        dop!("PUSH BC"            , &CPU::unimplemented),
+        dop!("ADD A,{:#2X}"  , u8 , &CPU::unimplemented_8),
+        dop!("RST 00H"            , &CPU::unimplemented),
+        dop!("RET Z"              , &CPU::stack_ret_z),
+        dop!("RET"                , &CPU::stack_ret),
+        dop!("JP Z,{:#4X}"   , u16, &CPU::jump_z),
+        dop!("PREFIX CB"          , &CPU::unimplemented),
+        dop!("CALL Z,{:#4X}" , u16, &CPU::stack_call_z),
+        dop!("CALL {:#4X}"   , u16, &CPU::stack_call),
+        dop!("ADC A,{:#2X}"  , u8 , &CPU::unimplemented_8),
+        dop!("RST 08H"            , &CPU::unimplemented),
+
+        dop!("RET NC"             , &CPU::stack_ret_nc),
+        dop!("POP DE"             , &CPU::unimplemented),
+        dop!("JP NC,{:#4X}"  , u16, &CPU::jump_nc),
+        dop!("0xD3 NOPE"          , &CPU::nonexistant),
+        dop!("CALL NC,{:#4X}", u16, &CPU::stack_call_nc),
+        dop!("PUSH DE"            , &CPU::unimplemented),
+        dop!("SUB A,{:#2X}"  , u8 , &CPU::unimplemented_8),
+        dop!("RST 10H"            , &CPU::unimplemented),
+        dop!("RET C"              , &CPU::stack_ret_c),
+        dop!("RETI"               , &CPU::unimplemented),
+        dop!("JP C,{:#4X}"   , u16, &CPU::jump_c),
+        dop!("0xDB NOPE"          , &CPU::nonexistant),
+        dop!("CALL C,{:#4X}" , u16, &CPU::stack_call_c),
+        dop!("0xDD NOPE"          , &CPU::nonexistant),
+        dop!("SBC A,{:#2X}"  , u8 , &CPU::unimplemented_8),
+        dop!("RST 18H"            , &CPU::unimplemented),
+
+        dop!("LDH ({:#2X}),A", u8 , &|cpu: &mut CPU, addr| { let value = cpu.regs.a; cpu.mmu.write_byte(addr as u16 + 0xFF00, value); 3 }),
+        dop!("POP HL"             , &CPU::unimplemented),
+        dop!("LD (C),A"           , &|cpu: &mut CPU| { let addr = cpu.regs.c; let value = cpu.regs.a; cpu.mmu.write_byte(addr as u16 + 0xFF00, value); 2 }),
+        dop!("0xE3 NOPE"          , &CPU::nonexistant),
+        dop!("0xE4 NOPE"          , &CPU::nonexistant),
+        dop!("PUSH HL"            , &CPU::unimplemented),
+        dop!("AND A,{:#2X}"  , u8 , &CPU::unimplemented_8),
+        dop!("RST 20H"            , &CPU::unimplemented),
+        dop!("ADD SP,{:#2X}" , u8 , &CPU::unimplemented_8),
+        dop!("JP (HL)"            , &CPU::unimplemented),
+        dop!("LD ({:#4X}),A" , u16, &|cpu: &mut CPU, addr| { cpu.mmu.write_byte(addr, cpu.regs.a); 4 }),
+        dop!("0xEB NOPE"          , &CPU::nonexistant),
+        dop!("0xEC NOPE"          , &CPU::nonexistant),
+        dop!("0xED NOPE"          , &CPU::nonexistant),
+        dop!("XOR {:#2X}"    , u8 , &CPU::unimplemented_8),
+        dop!("RST 28H"            , &CPU::unimplemented),
+
+        dop!("LDH A,({:#2X})", u8 , &|cpu: &mut CPU, addr| { cpu.regs.a = cpu.mmu.read_byte(addr as u16 + 0xFF00); 3 }),
+        dop!("POP AF"             , &CPU::unimplemented),
+        dop!("LD A,(C)"           , &|cpu: &mut CPU| { let addr = cpu.regs.c; cpu.regs.a = cpu.mmu.read_byte(addr as u16 + 0xFF00); 2 }),
+        dop!("DI"                 , &CPU::enable_interupts),
+        dop!("0xF4 NOPE"          , &CPU::nonexistant),
+        dop!("PUSH AF"            , &CPU::unimplemented),
+        dop!("OR {:#2X}"     , u8 , &CPU::unimplemented_8),
+        dop!("RST 30H"            , &CPU::unimplemented),
+        dop!("LD HL,SP+{:#2X}", u8, &CPU::unimplemented_8),
+        dop!("LD SP,HL"           , &CPU::unimplemented),
+        dop!("LD A,({:#4X})" , u16, &CPU::unimplemented_16),
+        dop!("DI"                 , &CPU::disable_interupts),
+        dop!("0xFC NOPE"          , &CPU::nonexistant),
+        dop!("0xFD NOPE"          , &CPU::nonexistant),
+        dop!("CP {:#2X}"     , u8 , &CPU::unimplemented_8),
+        dop!("RST 38H"            , &CPU::unimplemented),
+
     ];
 
     pub fn new(rom_data: &[u8]) -> CPU {
@@ -413,11 +499,29 @@ impl CPU {
         1
     }
 
+    fn enable_interupts(&mut self) -> usize {
+        println!("INTERUPTS NOT IMPLEMENTED YET");
+        1
+    }
+
+    fn disable_interupts(&mut self) -> usize {
+        println!("INTERUPTS NOT IMPLEMENTED YET");
+        1
+    }
+
+    fn nonexistant(&mut self) -> usize {
+        unimplemented!("this op doesn't exist on gb hardware")
+    }
+
     fn unimplemented(&mut self) -> usize {
         unimplemented!("op is unimplemented")
     }
 
     fn unimplemented_8(&mut self, _value: u8) -> usize {
+        unimplemented!("op is unimplemented")
+    }
+
+    fn unimplemented_16(&mut self, _value: u16) -> usize {
         unimplemented!("op is unimplemented")
     }
 
@@ -587,6 +691,132 @@ impl CPU {
         self.regs.set_flag(H, false);
         self.regs.set_flag(C, c);
         1
+    }
+
+    // Jumps
+
+    fn jump_nz(&mut self, addr:u16) -> usize {
+        if !self.regs.get_flag(Z) {
+            self.regs.pc = addr;
+            return 4
+        }
+        2
+    }
+
+    fn jump_nc(&mut self, addr:u16) -> usize {
+        if !self.regs.get_flag(C) {
+            self.regs.pc = addr;
+            return 4
+        }
+        2
+    }
+
+    fn jump_z(&mut self, addr:u16) -> usize {
+        if self.regs.get_flag(Z) {
+            self.regs.pc = addr;
+            return 4
+        }
+        2
+    }
+
+    fn jump_c(&mut self, addr:u16) -> usize {
+        if self.regs.get_flag(C) {
+            self.regs.pc = addr;
+            return 4
+        }
+        2
+    }
+
+    fn jump(&mut self, addr:u16) -> usize {
+        self.regs.pc = addr;
+        4
+    }
+
+    // Stack
+
+    fn stack_ret_nz(&mut self) -> usize {
+        if !self.regs.get_flag(Z) {
+            self.regs.pc = self.stack_pop();
+            return 5
+        }
+        2
+    }
+
+    fn stack_ret_nc(&mut self) -> usize {
+        if !self.regs.get_flag(C) {
+            self.regs.pc = self.stack_pop();
+            return 5
+        }
+        2
+    }
+
+    fn stack_ret_z(&mut self) -> usize {
+        if self.regs.get_flag(Z) {
+            self.regs.pc = self.stack_pop();
+            return 5
+        }
+        2
+    }
+
+    fn stack_ret_c(&mut self) -> usize {
+        if self.regs.get_flag(C) {
+            self.regs.pc = self.stack_pop();
+            return 5
+        }
+        2
+    }
+
+    fn stack_ret(&mut self) -> usize {
+        self.regs.pc = self.stack_pop();
+        return 4
+    }
+
+    fn stack_call_nz(&mut self, value:u16) -> usize {
+        if !self.regs.get_flag(Z) {
+            self.stack_push(value);
+            return 6
+        }
+        3
+    }
+
+    fn stack_call_nc(&mut self, value:u16) -> usize {
+        if !self.regs.get_flag(C) {
+            self.stack_push(value);
+            return 6
+        }
+        3
+    }
+
+    fn stack_call_z(&mut self, value:u16) -> usize {
+        if self.regs.get_flag(Z) {
+            self.stack_push(value);
+            return 6
+        }
+        3
+    }
+
+    fn stack_call_c(&mut self, value:u16) -> usize {
+        if self.regs.get_flag(C) {
+            self.stack_push(value);
+            return 6
+        }
+        3
+    }
+
+    fn stack_call(&mut self, value:u16) -> usize {
+        self.stack_push(value);
+        return 6
+    }
+
+    fn stack_pop(&mut self) -> u16 {
+        let result = self.mmu.read_word(self.regs.sp);
+        self.regs.sp += 2;
+        result
+    }
+
+    fn stack_push(&mut self, value:u16) {
+        self.regs.sp -= 2;
+        self.mmu.write_word(self.regs.sp, value);
     }
 
     // Rotates

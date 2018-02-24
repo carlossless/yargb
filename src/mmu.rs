@@ -2,7 +2,15 @@ use mbc::MBC;
 use mbc::nullmbc::NULLMBC;
 
 pub struct MMU {
-    mbc: Box<MBC>
+    mbc: Box<MBC>,
+    video_ram: [u8; 0x2000],
+    work_ram: [u8; 0x2000],
+    timer_stub: [u8; 0x0004],
+    interupt_flags: u8,
+    interupt_enable: u8,
+    sound_flags: u8,
+    sound_output: u8,
+    channel_control: u8
 }
 
 impl MMU {
@@ -10,13 +18,29 @@ impl MMU {
         let mut rom: [u8; 32000] = [0; 32000];
         rom.copy_from_slice(&rom_data[..32000]);
         MMU {
-            mbc: Box::new(NULLMBC::new(rom))
+            mbc: Box::new(NULLMBC::new(rom)),
+            video_ram: [0; 0x2000],
+            work_ram: [0; 0x2000],
+            timer_stub: [0; 0x0004],
+            interupt_flags: 0,
+            interupt_enable: 0,
+            sound_flags: 0,
+            sound_output: 0,
+            channel_control: 0
         }
     }
 
     pub fn read_byte(&self, addr: u16) -> u8 {
         match addr {
-            0x0000 ... 0x7D00 => self.mbc.read_rom(addr),
+            0x0000 ... 0x7FFF => self.mbc.read_rom(addr),
+            0x8000 ... 0x9FFF => self.video_ram[(addr - 0x8000) as usize],
+            0xC000 ... 0xDFFF => self.work_ram[(addr - 0xC000) as usize],
+            0xFF04 ... 0xFF07 => self.timer_stub[(addr - 0xFF04) as usize],
+            0xFF0F => self.interupt_flags,
+            0xFF24 => self.channel_control,
+            0xFF25 => self.sound_output,
+            0xFF26 => self.sound_flags,
+            0xFFFF => self.interupt_enable,
             other => panic!("MMU for {:2X} is not implemented", other)
         }
     }
@@ -25,13 +49,21 @@ impl MMU {
         (self.read_byte(addr) as u16) | ((self.read_byte(addr + 1) as u16) << 8)
     }
 
-    pub fn write_byte(&self, addr: u16, _value: u8) {
+    pub fn write_byte(&mut self, addr: u16, value: u8) {
         match addr {
+            0x8000 ... 0x9FFF => { self.video_ram[(addr - 0x8000) as usize] = value; },
+            0xC000 ... 0xDFFF => { self.work_ram[(addr - 0xC000) as usize] = value; },
+            0xFF04 ... 0xFF07 => { self.timer_stub[(addr - 0xFF04) as usize] = value; },
+            0xFF0F => { self.interupt_flags = value; }
+            0xFF24 => { self.channel_control = value; }
+            0xFF25 => { self.sound_output = value; }
+            0xFF26 => { self.sound_flags = value; }
+            0xFFFF => { self.interupt_enable = value; }
             other => panic!("MMU for {:2X} is not implemented", other)
         }
     }
 
-    pub fn write_word(&self, addr: u16, value: u16) {
+    pub fn write_word(&mut self, addr: u16, value: u16) {
         self.write_byte(addr, (value & 0xFF) as u8);
         self.write_byte(addr + 1, (value >> 8) as u8);
     }
