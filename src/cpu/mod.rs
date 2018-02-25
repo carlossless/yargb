@@ -1,9 +1,13 @@
 use registers::Registers;
-use registers::Flag::{ Z, N, H, C };
 use registers::WordRegister::{ BC, DE, HL, SP };
 use mmu::MMU;
-use std::{thread, time};
 use utils::format::FormatAsSigned;
+
+#[macro_use]
+mod alu;
+mod stack;
+mod jump;
+mod shift;
 
 pub struct CPU {
     regs: Registers,
@@ -45,151 +49,10 @@ macro_rules! dop {
     });
 }
 
-macro_rules! inc_byte {
-    ($register:ident) => (
-        |cpu: &mut CPU| {
-            let mut v = cpu.regs.$register;
-            cpu.inc_byte(&mut v);
-            cpu.regs.$register = v;
-            1
-        }
-    )
-}
-
-macro_rules! dec_byte {
-    ($register:ident) => (
-        |cpu: &mut CPU| {
-            let mut v = cpu.regs.$register;
-            cpu.dec_byte(&mut v);
-            cpu.regs.$register = v;
-            1
-        }
-    )
-}
-
-// TODO: could be replaced by patern matched functions instead of the intermal match
-macro_rules! inc_word {
-    ($register:ident) => (
-        |cpu: &mut CPU| {
-            let mut v = cpu.regs.get($register);
-            cpu.inc_word(&mut v);
-            cpu.regs.set($register, v);
-            2
-        }
-    )
-}
-
-// TODO: could be replaced by patern matched functions instead of the intermal match
-macro_rules! dec_word {
-    ($register:ident) => (
-        |cpu: &mut CPU| {
-            let mut v = cpu.regs.get($register);
-            cpu.dec_word(&mut v);
-            cpu.regs.set($register, v);
-            2
-        }
-    )
-}
-
 macro_rules! ld {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
             cpu.regs.$source_register = cpu.regs.$target_register;
-            1
-        }
-    )
-}
-
-macro_rules! add {
-    ($source_register:ident, $target_register:ident) => (
-        |cpu: &mut CPU| {
-            let addend = cpu.regs.$source_register;
-            let mut v = cpu.regs.$target_register;
-            v = cpu.add_byte(v, addend);
-            cpu.regs.$target_register = v;
-            1
-        }
-    )
-}
-
-macro_rules! adc {
-    ($source_register:ident, $target_register:ident) => (
-        |cpu: &mut CPU| {
-            let addend = cpu.regs.$source_register;
-            let mut v = cpu.regs.$target_register;
-            v = cpu.add_byte_with_carry(v, addend);
-            cpu.regs.$target_register = v;
-            1
-        }
-    )
-}
-
-macro_rules! sub {
-    ($source_register:ident, $target_register:ident) => (
-        |cpu: &mut CPU| {
-            let addend = cpu.regs.$source_register;
-            let mut v = cpu.regs.$target_register;
-            v = cpu.sub_byte(v, addend);
-            cpu.regs.$target_register = v;
-            1
-        }
-    )
-}
-
-macro_rules! sbc {
-    ($source_register:ident, $target_register:ident) => (
-        |cpu: &mut CPU| {
-            let addend = cpu.regs.$source_register;
-            let mut v = cpu.regs.$target_register;
-            v = cpu.sub_byte_with_carry(v, addend);
-            cpu.regs.$target_register = v;
-            1
-        }
-    )
-}
-
-macro_rules! and {
-    ($source_register:ident, $target_register:ident) => (
-        |cpu: &mut CPU| {
-            let x = cpu.regs.$source_register;
-            let y = cpu.regs.$target_register;
-            let r = cpu.alu_and(x, y);
-            cpu.regs.$target_register = r;
-            1
-        }
-    )
-}
-
-macro_rules! xor {
-    ($source_register:ident, $target_register:ident) => (
-        |cpu: &mut CPU| {
-            let x = cpu.regs.$source_register;
-            let y = cpu.regs.$target_register;
-            let r = cpu.alu_xor(x, y);
-            cpu.regs.$target_register = r;
-            1
-        }
-    )
-}
-
-macro_rules! or {
-    ($source_register:ident, $target_register:ident) => (
-        |cpu: &mut CPU| {
-            let x = cpu.regs.$source_register;
-            let y = cpu.regs.$target_register;
-            let r = cpu.alu_or(x, y);
-            cpu.regs.$target_register = r;
-            1
-        }
-    )
-}
-
-macro_rules! cp {
-    ($source_register:ident, $target_register:ident) => (
-        |cpu: &mut CPU| {
-            let x = cpu.regs.$source_register;
-            let y = cpu.regs.$target_register;
-            cpu.alu_cp(x, y);
             1
         }
     )
@@ -206,7 +69,7 @@ impl CPU {
         dop!("LD B,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.b = value; 2 }), // 0x06 LD B,d8
         dop!("RLCA"                , &CPU::rotate_left_circular_accumulator), // 0x07 RLCA
         dop!("LD ({:#06X}),SP", u16, &|cpu: &mut CPU, addr| { cpu.mmu.write_word(addr, cpu.regs.sp); 5 }), // 0x08 LD (a16),SP
-        dop!("ADD HL,BC"           , &|cpu: &mut CPU| { let v = cpu.regs.get_bc(); cpu.add_to_hl(v); 2 }), // 0x09 ADD HL,BC
+        dop!("ADD HL,BC"           , &|cpu: &mut CPU| { let v = cpu.regs.get_bc(); cpu.alu_add_to_hl(v); 2 }), // 0x09 ADD HL,BC
         dop!("LD A,(BC)"           , &|cpu: &mut CPU| { let a = cpu.regs.get_bc(); cpu.regs.a = cpu.mmu.read_byte(a); 2 }), // 0x0A LD A,(BC)
         dop!("DEC BC"              , &dec_word!(BC)), // 0x0B DEC BC
         dop!("INC C"               , &inc_byte!(c)), // 0x0C INC C
@@ -223,7 +86,7 @@ impl CPU {
         dop!("LD D,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.d = value; 2 }), // 0x16 LD D,d8
         dop!("RLA"                 , &CPU::rotate_left_accumulator), // 0x07 RLA
         dop!("JR {:#02X}"     , i8 , &CPU::relative_jump), // 0x18 JR r8
-        dop!("ADD HL,DE"           , &|cpu: &mut CPU| { let v = cpu.regs.get_de(); cpu.add_to_hl(v); 2 }), // 0x19 ADD HL,DE
+        dop!("ADD HL,DE"           , &|cpu: &mut CPU| { let v = cpu.regs.get_de(); cpu.alu_add_to_hl(v); 2 }), // 0x19 ADD HL,DE
         dop!("LD A,(DE)"           , &|cpu: &mut CPU| { let a = cpu.regs.get_de(); cpu.regs.a = cpu.mmu.read_byte(a); 2 }), // 0x1A LD A,(DE)
         dop!("DEC DE"              , &dec_word!(DE)), // 0x1B DEC DE
         dop!("INC E"               , &inc_byte!(e)), // 0x1C INC E
@@ -238,32 +101,32 @@ impl CPU {
         dop!("INC H"               , &inc_byte!(h)), // 0x24 INC H
         dop!("DEC H"               , &dec_byte!(h)), // 0x25 DEC H
         dop!("LD H,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.h = value; 2 }), // 0x26 LD H,d8
-        dop!("DDA"                 , &CPU::decimal_adjust_accumulator), // 0x27 DAA
+        dop!("DDA"                 , &CPU::alu_decimal_adjust_accumulator), // 0x27 DAA
         dop!("JR Z,{:#04X}"   , i8 , &CPU::relative_jump_z), // 0x28 JR Z,r8
-        dop!("ADD HL,HL"           , &|cpu: &mut CPU| { let v = cpu.regs.get_hl(); cpu.add_to_hl(v); 2 }), // 0x29 ADD HL,HL
+        dop!("ADD HL,HL"           , &|cpu: &mut CPU| { let v = cpu.regs.get_hl(); cpu.alu_add_to_hl(v); 2 }), // 0x29 ADD HL,HL
         dop!("LD A,(HL+)"          , &CPU::unimplemented), // 0x2A LD A,(HL+)
         dop!("DEC HL"              , &dec_word!(HL)), // 0x2B DEC HL
         dop!("INC L"               , &inc_byte!(l)), // 0x2C INC L
         dop!("DEC L"               , &dec_byte!(l)), // 0x2D DEC L
         dop!("LD L,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.l = value; 2 }), // 0x2E LD L,d8
-        dop!("CPL"                 , &CPU::complement), // 0x2F CPL
+        dop!("CPL"                 , &CPU::alu_complement), // 0x2F CPL
 
         dop!("JR NC,{:#04X}"  , i8 , &CPU::relative_jump_nc), // 0x30 JR NC,r8
         dop!("LD SP,{:#06X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.sp = value; 3 }), // 0x31 LD SP,d16
         dop!("LD (HL-),A"          , &CPU::unimplemented), // 0x32 LD (HL-),A
         dop!("INC SP"              , &inc_word!(SP)), // 0x34 INC SP
-        dop!("INC (HL)"            , &|cpu: &mut CPU| { let a = cpu.regs.get_hl(); let mut v = cpu.mmu.read_byte(a); cpu.inc_byte(&mut v); cpu.mmu.write_byte(a, v); 3 }), // 0x34 INC (HL)
-        dop!("DEC (HL)"            , &|cpu: &mut CPU| { let a = cpu.regs.get_hl(); let mut v = cpu.mmu.read_byte(a); cpu.dec_byte(&mut v); cpu.mmu.write_byte(a, v); 3 }), // 0x35 DEC (HL)
+        dop!("INC (HL)"            , &|cpu: &mut CPU| { let a = cpu.regs.get_hl(); let mut v = cpu.mmu.read_byte(a); cpu.alu_inc_byte(&mut v); cpu.mmu.write_byte(a, v); 3 }), // 0x34 INC (HL)
+        dop!("DEC (HL)"            , &|cpu: &mut CPU| { let a = cpu.regs.get_hl(); let mut v = cpu.mmu.read_byte(a); cpu.alu_dec_byte(&mut v); cpu.mmu.write_byte(a, v); 3 }), // 0x35 DEC (HL)
         dop!("LD (HL),{:#04X}", u8 , &|cpu: &mut CPU, value| { let a = cpu.regs.get_hl(); cpu.mmu.write_byte(a, value); 3 }), // 0x36 LD (HL),d8
-        dop!("SCF"                 , &CPU::set_carry_flag), // 0x37 SCF
+        dop!("SCF"                 , &CPU::alu_set_carry_flag), // 0x37 SCF
         dop!("JR C,{:#04X}"   , i8 , &CPU::relative_jump_c), // 0x38 JR C,r8
-        dop!("ADD HL,SP"           , &|cpu: &mut CPU| { let v = cpu.regs.sp; cpu.add_to_hl(v); 2 }), // 0x39 ADD HL,SP
+        dop!("ADD HL,SP"           , &|cpu: &mut CPU| { let v = cpu.regs.sp; cpu.alu_add_to_hl(v); 2 }), // 0x39 ADD HL,SP
         dop!("LD A,(HL-)"          , &CPU::unimplemented), // 0x3A LD A,(HL-)
         dop!("DEC SP"              , &dec_word!(SP)), // 0x3B DEC SP
         dop!("INC A"               , &inc_byte!(a)), // 0x3C INC A
         dop!("DEC A"               , &dec_byte!(a)), // 0x3D DEC A
         dop!("LD A,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.a = value; 2 }), // 0x3E LD A,d8
-        dop!("CCF"                 , &CPU::complement_carry_flag), // 0x3F CCF
+        dop!("CCF"                 , &CPU::alu_complement_carry_flag), // 0x3F CCF
 
         dop!("LD B,B"              , &ld!(b,b)), // 0x40 LD B,B
         dop!("LD B,C"              , &ld!(b,c)), // 0x41 LD B,C
@@ -539,395 +402,6 @@ impl CPU {
 
     fn unimplemented_16(&mut self, _value: u16) -> usize {
         unimplemented!("op is unimplemented")
-    }
-
-    // ALU
-
-    fn inc_byte(&mut self, value: &mut u8) {
-        let result = value.wrapping_add(1);
-        self.regs.set_flag(Z, result == 0);
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, (*value & 0x0F) + 1 > 0x0F);
-        *value = result;
-    }
-
-    fn inc_word(&mut self, value: &mut u16) {
-        *value = value.wrapping_add(1)
-    }
-
-    fn dec_byte(&mut self, value: &mut u8) {
-        let result = value.wrapping_sub(1);
-        self.regs.set_flag(Z, result == 0);
-        self.regs.set_flag(N, true);
-        self.regs.set_flag(H, (*value & 0x0F) == 0x0F);
-        *value = result;
-    }
-
-    fn dec_word(&mut self, value: &mut u16) {
-        *value = value.wrapping_sub(1)
-    }
-
-    fn add_to_hl(&mut self, value: u16) {
-        let hl = self.regs.get_hl();
-        self.add_word(hl, value);
-        self.regs.set_hl(hl);
-    }
-
-    fn add_word(&mut self, lhs: u16, rhs: u16) -> u16 {
-        let result = lhs.wrapping_add(rhs);
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, ((lhs & 0x07FF) + (rhs & 0x07FF)) > 0x07FF);
-        self.regs.set_flag(C, lhs > 0xFFFF - rhs);
-        result
-    }
-
-    fn add_byte(&mut self, lhs: u8, rhs: u8) -> u8 {
-        let result = lhs.wrapping_add(rhs);
-        self.regs.set_flag(Z, result == 0);
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, ((lhs & 0x0F) + (rhs & 0x0F)) > 0x0F);
-        self.regs.set_flag(C, lhs > 0xFF - rhs);
-        result
-    }
-
-    fn add_byte_with_carry(&mut self, lhs: u8, rhs: u8) -> u8 {
-        let carry = if self.regs.get_flag(C) { 1 } else { 0 };
-        let result = lhs.wrapping_add(rhs).wrapping_add(carry);
-        self.regs.set_flag(Z, result == 0);
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, ((lhs & 0x0F) + (rhs & 0x0F)).wrapping_add(carry) > 0x0F);
-        self.regs.set_flag(C, lhs > 0xFF - rhs - carry);
-        result
-    }
-
-    fn sub_byte(&mut self, lhs: u8, rhs: u8) -> u8 {
-        let result = lhs.wrapping_sub(rhs);
-        self.regs.set_flag(Z, result == 0);
-        self.regs.set_flag(N, true);
-        self.regs.set_flag(H, (lhs & 0x0F) < (rhs & 0x0F));
-        self.regs.set_flag(C, lhs < rhs);
-        result
-    }
-
-    fn sub_byte_with_carry(&mut self, lhs: u8, rhs: u8) -> u8 {
-        let carry = if self.regs.get_flag(C) { 1 } else { 0 };
-        let result = lhs.wrapping_add(rhs).wrapping_add(carry);
-        self.regs.set_flag(Z, result == 0);
-        self.regs.set_flag(N, true);
-        self.regs.set_flag(H, ((lhs & 0x0F) < (rhs & 0x0F).wrapping_add(carry)));
-        self.regs.set_flag(C, (lhs as u16) < (rhs as u16) + (carry as u16));
-        result
-    }
-
-    fn alu_and(&mut self, lhs: u8, rhs: u8) -> u8 {
-        let result = lhs & rhs;
-        self.regs.set_flag(Z, result == 0);
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, true);
-        self.regs.set_flag(C, false);
-        result
-    }
-
-    fn alu_xor(&mut self, lhs: u8, rhs: u8) -> u8 {
-        let result = lhs ^ rhs;
-        self.regs.set_flag(Z, result == 0);
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, false);
-        self.regs.set_flag(C, false);
-        result
-    }
-
-    fn alu_or(&mut self, lhs: u8, rhs: u8) -> u8 {
-        let result = lhs ^ rhs;
-        self.regs.set_flag(Z, result == 0);
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, false);
-        self.regs.set_flag(C, false);
-        result
-    }
-
-    fn alu_cp(&mut self, lhs: u8, rhs: u8) {
-        self.sub_byte(lhs, rhs);
-    }
-
-    // TODO: using match here is unnecessary... can be done more concisely by mutating through conditions
-    fn decimal_adjust_accumulator(&mut self) -> usize {
-        let n = self.regs.get_flag(N);
-        let h = self.regs.get_flag(H);
-        let mut c = self.regs.get_flag(C);
-        let mut a = self.regs.a;
-        let upper_digit = a >> 4;
-        let lower_digit = a & 0xF;
-        c = if n {
-            match (c, h, upper_digit, lower_digit) {
-                (false, false, 0x0...0x9, 0x0...0x9) => { false }
-                (false, false, 0x0...0x8, 0xA...0xF) => { a = a.wrapping_add(0x06); false }
-                (false, true,  0x0...0x9, 0x0...0x3) => { a = a.wrapping_add(0x06); false }
-                (false, false, 0xA...0xF, 0x0...0x9) => { a = a.wrapping_add(0x60); true }
-                (false, false, 0x9...0xF, 0xA...0xF) => { a = a.wrapping_add(0x66); true }
-                (false, true , 0xA...0xF, 0x0...0x3) => { a = a.wrapping_add(0x66); true }
-                (true , false, 0x0...0x2, 0x0...0x9) => { a = a.wrapping_add(0x60); true }
-                (true , false, 0x0...0x2, 0xA...0xF) => { a = a.wrapping_add(0x66); true }
-                (true , true , 0x0...0x3, 0x0...0x3) => { a = a.wrapping_add(0x66); true }
-                _ => { panic!("DAA should never reach this case") }
-            }
-        } else {
-            match (c, h, upper_digit, lower_digit) {
-                (false, false, 0x0...0x9, 0x0...0x9) => { false }
-                (false, true,  0x0...0x8, 0x6...0xF) => { a = a.wrapping_add(0xFA); false }
-                (false, false, 0x9...0xF, 0xA...0xF) => { a = a.wrapping_add(0xA0); true }
-                (true , true , 0xA...0xF, 0x0...0x3) => { a = a.wrapping_add(0x9A); true }
-                _ => { panic!("DAA should never reach this case") }
-            }
-        };
-        self.regs.set_flag(Z, a == 0);
-        self.regs.set_flag(H, false);
-        self.regs.set_flag(C, c);
-        self.regs.a = a;
-        1
-    }
-
-    fn complement(&mut self) -> usize {
-        self.regs.set_flag(N, true);
-        self.regs.set_flag(H, true);
-        self.regs.a = !self.regs.a;
-        1
-    }
-
-    fn set_carry_flag(&mut self) -> usize {
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, false);
-        self.regs.set_flag(C, true);
-        1
-    }
-
-    fn complement_carry_flag(&mut self) -> usize {
-        let c = !self.regs.get_flag(C);
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, false);
-        self.regs.set_flag(C, c);
-        1
-    }
-
-    // Jumps
-
-    fn jump_nz(&mut self, addr:u16) -> usize {
-        if !self.regs.get_flag(Z) {
-            return self.jump(addr)
-        }
-        2
-    }
-
-    fn jump_nc(&mut self, addr:u16) -> usize {
-        if !self.regs.get_flag(C) {
-            return self.jump(addr)
-        }
-        2
-    }
-
-    fn jump_z(&mut self, addr:u16) -> usize {
-        if self.regs.get_flag(Z) {
-            return self.jump(addr)
-        }
-        2
-    }
-
-    fn jump_c(&mut self, addr:u16) -> usize {
-        if self.regs.get_flag(C) {
-            return self.jump(addr)
-        }
-        2
-    }
-
-    fn jump(&mut self, addr:u16) -> usize {
-        self.regs.pc = addr;
-        4
-    }
-
-    fn relative_jump_nz(&mut self, addr:i8) -> usize {
-        if !self.regs.get_flag(Z) {
-            return self.relative_jump(addr)
-        }
-        2
-    }
-
-    fn relative_jump_nc(&mut self, addr:i8) -> usize {
-        if !self.regs.get_flag(C) {
-            return self.relative_jump(addr)
-        }
-        2
-    }
-
-    fn relative_jump_z(&mut self, addr:i8) -> usize {
-        if self.regs.get_flag(Z) {
-            return self.relative_jump(addr)
-        }
-        2
-    }
-
-    fn relative_jump_c(&mut self, addr:i8) -> usize {
-        if self.regs.get_flag(C) {
-            return self.relative_jump(addr)
-        }
-        2
-    }
-
-    fn relative_jump(&mut self, addr:i8) -> usize {
-        self.regs.pc = (self.regs.pc as i16 + addr as i16) as u16;
-        3
-    }
-
-    // Stack
-
-    fn stack_ret_nz(&mut self) -> usize {
-        if !self.regs.get_flag(Z) {
-            self.regs.pc = self.stack_pop();
-            return 5
-        }
-        2
-    }
-
-    fn stack_ret_nc(&mut self) -> usize {
-        if !self.regs.get_flag(C) {
-            self.regs.pc = self.stack_pop();
-            return 5
-        }
-        2
-    }
-
-    fn stack_ret_z(&mut self) -> usize {
-        if self.regs.get_flag(Z) {
-            self.regs.pc = self.stack_pop();
-            return 5
-        }
-        2
-    }
-
-    fn stack_ret_c(&mut self) -> usize {
-        if self.regs.get_flag(C) {
-            self.regs.pc = self.stack_pop();
-            return 5
-        }
-        2
-    }
-
-    fn stack_ret(&mut self) -> usize {
-        self.regs.pc = self.stack_pop();
-        return 4
-    }
-
-    fn stack_call_nz(&mut self, value:u16) -> usize {
-        if !self.regs.get_flag(Z) {
-            return self.stack_call(value)
-        }
-        3
-    }
-
-    fn stack_call_nc(&mut self, value:u16) -> usize {
-        if !self.regs.get_flag(C) {
-            return self.stack_call(value)
-        }
-        3
-    }
-
-    fn stack_call_z(&mut self, value:u16) -> usize {
-        if self.regs.get_flag(Z) {
-            return self.stack_call(value)
-        }
-        3
-    }
-
-    fn stack_call_c(&mut self, value:u16) -> usize {
-        if self.regs.get_flag(C) {
-            return self.stack_call(value)
-        }
-        3
-    }
-
-    fn stack_call(&mut self, value:u16) -> usize {
-        let next_op = self.regs.pc + 2;
-        self.stack_push(next_op);
-        self.regs.pc = value;
-        return 6
-    }
-
-    fn stack_pop(&mut self) -> u16 {
-        let result = self.mmu.read_word(self.regs.sp);
-        self.regs.sp += 2;
-        result
-    }
-
-    fn stack_push_af(&mut self) -> usize {
-        let value = self.regs.get_af();
-        self.stack_push(value);
-        4
-    }
-
-    fn stack_push_bc(&mut self) -> usize {
-        let value = self.regs.get_bc();
-        self.stack_push(value);
-        4
-    }
-
-    fn stack_push_de(&mut self) -> usize {
-        let value = self.regs.get_de();
-        self.stack_push(value);
-        4
-    }
-
-    fn stack_push_hl(&mut self) -> usize {
-        let value = self.regs.get_hl();
-        self.stack_push(value);
-        4
-    }
-
-    fn stack_push(&mut self, value:u16) {
-        self.regs.sp -= 2;
-        self.mmu.write_word(self.regs.sp, value);
-    }
-
-    // Rotates
-
-    fn rotate_left_circular_accumulator(&mut self) -> usize {
-        let a = self.regs.a;
-        self.regs.set_flag(Z, false);
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, false);
-        self.regs.set_flag(C, (a & (1 << 7)) != 0);
-        self.regs.a = a.rotate_left(1);
-        1
-    }
-
-    fn rotate_left_accumulator(&mut self) -> usize {
-        let a = self.regs.a;
-        let c = self.regs.get_flag(C);
-        self.regs.set_flag(Z, false);
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, false);
-        self.regs.set_flag(C, (a & (1 << 7)) != 0);
-        self.regs.a = a << 1 | (if c { 1 } else { 0 });
-        1
-    }
-
-    fn rotate_right_circular_accumulator(&mut self) -> usize {
-        let a = self.regs.a;
-        self.regs.set_flag(Z, false);
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, false);
-        self.regs.set_flag(C, (a & 1) > 0);
-        self.regs.a = a.rotate_right(1);
-        1
-    }
-
-    fn rotate_right_accumulator(&mut self) -> usize {
-        let a = self.regs.a;
-        let c = self.regs.get_flag(C);
-        self.regs.set_flag(Z, false);
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, false);
-        self.regs.set_flag(C, (a & 1) != 0);
-        self.regs.a = a >> 1 | (if c { 1 << 7 } else { 0 });
-        1
     }
 
     // DEBUG
