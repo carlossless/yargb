@@ -2,6 +2,8 @@ use registers::Registers;
 use registers::Flag::{ Z, N, H, C };
 use registers::WordRegister::{ BC, DE, HL, SP };
 use mmu::MMU;
+use std::{thread, time};
+use utils::format::FormatAsSigned;
 
 pub struct CPU {
     regs: Registers,
@@ -24,6 +26,13 @@ macro_rules! dop {
         execute: &|cpu: &mut CPU| {
             let value: u8 = cpu.fetch_byte();
             println!($name, value);
+            $execute(cpu, value)
+        }
+    });
+    ($name:tt, i8, $execute:expr) => (Operation {
+        execute: &|cpu: &mut CPU| {
+            let value = cpu.fetch_byte() as i8;
+            println!($name, FormatAsSigned(value));
             $execute(cpu, value)
         }
     });
@@ -213,7 +222,7 @@ impl CPU {
         dop!("DEC D"              , &dec_byte!(d)), // 0x15 DEC D
         dop!("LD D,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.d = value; 2 }), // 0x16 LD D,d8
         dop!("RLA"                , &CPU::rotate_left_accumulator), // 0x07 RLA
-        dop!("JR {:#2X}"     , u8 , &CPU::unimplemented_8), // 0x18 JR r8
+        dop!("JR {:#02X}"    , i8 , &CPU::relative_jump), // 0x18 JR r8
         dop!("ADD HL,DE"          , &|cpu: &mut CPU| { let v = cpu.regs.get_de(); cpu.add_to_hl(v); 2 }), // 0x19 ADD HL,DE
         dop!("LD A,(DE)"          , &|cpu: &mut CPU| { let a = cpu.regs.get_de(); cpu.regs.a = cpu.mmu.read_byte(a); 2 }), // 0x1A LD A,(DE)
         dop!("DEC DE"             , &dec_word!(DE)), // 0x1B DEC DE
@@ -222,7 +231,7 @@ impl CPU {
         dop!("LD E,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.e = value; 2 }), // 0x1E LD E,d8
         dop!("RRA"                , &CPU::rotate_right_accumulator), // 0x1F RRA
 
-        dop!("JR NZ,{:#2X}"  , u8 , &CPU::unimplemented_8), // 0x20 JR NZ,r8
+        dop!("JR NZ,{:#02X}"  , i8 , &CPU::relative_jump_nz), // 0x20 JR NZ,r8
         dop!("LD HL,{:#4X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.set_hl(value); 3 }), // 0x21 LD HL,d16
         dop!("LD (HL+),A"         , &CPU::unimplemented), // 0x22 LD (HL+),A
         dop!("INC HL"             , &inc_word!(HL)), // 0x23 INC HL
@@ -230,7 +239,7 @@ impl CPU {
         dop!("DEC H"              , &dec_byte!(h)), // 0x25 DEC H
         dop!("LD H,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.h = value; 2 }), // 0x26 LD H,d8
         dop!("DDA"                , &CPU::decimal_adjust_accumulator), // 0x27 DAA
-        dop!("JR Z,{:#2X}"   , u8 , &CPU::unimplemented_8), // 0x28 JR Z,r8
+        dop!("JR Z,{:#2X}"   , i8 , &CPU::relative_jump_z), // 0x28 JR Z,r8
         dop!("ADD HL,HL"          , &|cpu: &mut CPU| { let v = cpu.regs.get_hl(); cpu.add_to_hl(v); 2 }), // 0x29 ADD HL,HL
         dop!("LD A,(HL+)"         , &CPU::unimplemented), // 0x2A LD A,(HL+)
         dop!("DEC HL"             , &dec_word!(HL)), // 0x2B DEC HL
@@ -239,7 +248,7 @@ impl CPU {
         dop!("LD L,{:#2X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.l = value; 2 }), // 0x2E LD L,d8
         dop!("CPL"                , &CPU::complement), // 0x2F CPL
 
-        dop!("JR NC,{:#2X}"  , u8 , &CPU::unimplemented_8), // 0x30 JR NC,r8
+        dop!("JR NC,{:#2X}"  , i8 , &CPU::relative_jump_nc), // 0x30 JR NC,r8
         dop!("LD SP,{:#4X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.sp = value; 3 }), // 0x31 LD SP,d16
         dop!("LD (HL-),A"         , &CPU::unimplemented), // 0x32 LD (HL-),A
         dop!("INC SP"             , &inc_word!(SP)), // 0x34 INC SP
@@ -247,7 +256,7 @@ impl CPU {
         dop!("DEC (HL)"           , &|cpu: &mut CPU| { let a = cpu.regs.get_hl(); let mut v = cpu.mmu.read_byte(a); cpu.dec_byte(&mut v); cpu.mmu.write_byte(a, v); 3 }), // 0x35 DEC (HL)
         dop!("LD (HL),{:#2X}", u8 , &|cpu: &mut CPU, value| { let a = cpu.regs.get_hl(); cpu.mmu.write_byte(a, value); 3 }), // 0x36 LD (HL),d8
         dop!("SCF"                , &CPU::set_carry_flag), // 0x37 SCF
-        dop!("JR C,{:#2X}"   , u8 , &CPU::unimplemented_8), // 0x38 JR C,r8
+        dop!("JR C,{:#2X}"   , i8 , &CPU::relative_jump_c), // 0x38 JR C,r8
         dop!("ADD HL,SP"          , &|cpu: &mut CPU| { let v = cpu.regs.sp; cpu.add_to_hl(v); 2 }), // 0x39 ADD HL,SP
         dop!("LD A,(HL-)"         , &CPU::unimplemented), // 0x3A LD A,(HL-)
         dop!("DEC SP"             , &dec_word!(SP)), // 0x3B DEC SP
@@ -397,7 +406,7 @@ impl CPU {
         dop!("JP NZ,{:#4X}"  , u16, &CPU::jump_nz),
         dop!("JP {:#4X}"     , u16, &CPU::jump),
         dop!("CALL NZ,{:#4X}", u16, &CPU::stack_call_nz),
-        dop!("PUSH BC"            , &CPU::unimplemented),
+        dop!("PUSH BC"            , &CPU::stack_push_bc),
         dop!("ADD A,{:#2X}"  , u8 , &CPU::unimplemented_8),
         dop!("RST 00H"            , &CPU::unimplemented),
         dop!("RET Z"              , &CPU::stack_ret_z),
@@ -414,7 +423,7 @@ impl CPU {
         dop!("JP NC,{:#4X}"  , u16, &CPU::jump_nc),
         dop!("0xD3 NOPE"          , &CPU::nonexistant),
         dop!("CALL NC,{:#4X}", u16, &CPU::stack_call_nc),
-        dop!("PUSH DE"            , &CPU::unimplemented),
+        dop!("PUSH DE"            , &CPU::stack_push_de),
         dop!("SUB A,{:#2X}"  , u8 , &CPU::unimplemented_8),
         dop!("RST 10H"            , &CPU::unimplemented),
         dop!("RET C"              , &CPU::stack_ret_c),
@@ -431,7 +440,7 @@ impl CPU {
         dop!("LD (C),A"           , &|cpu: &mut CPU| { let addr = cpu.regs.c; let value = cpu.regs.a; cpu.mmu.write_byte(addr as u16 + 0xFF00, value); 2 }),
         dop!("0xE3 NOPE"          , &CPU::nonexistant),
         dop!("0xE4 NOPE"          , &CPU::nonexistant),
-        dop!("PUSH HL"            , &CPU::unimplemented),
+        dop!("PUSH HL"            , &CPU::stack_push_hl),
         dop!("AND A,{:#2X}"  , u8 , &CPU::unimplemented_8),
         dop!("RST 20H"            , &CPU::unimplemented),
         dop!("ADD SP,{:#2X}" , u8 , &CPU::unimplemented_8),
@@ -444,11 +453,11 @@ impl CPU {
         dop!("RST 28H"            , &CPU::unimplemented),
 
         dop!("LDH A,({:#2X})", u8 , &|cpu: &mut CPU, addr| { cpu.regs.a = cpu.mmu.read_byte(addr as u16 + 0xFF00); 3 }),
-        dop!("POP AF"             , &CPU::unimplemented),
+        dop!("POP AF"             , &|cpu: &mut CPU| { let value = cpu.stack_pop(); cpu.regs.set_af(value); 3 }),
         dop!("LD A,(C)"           , &|cpu: &mut CPU| { let addr = cpu.regs.c; cpu.regs.a = cpu.mmu.read_byte(addr as u16 + 0xFF00); 2 }),
         dop!("DI"                 , &CPU::enable_interupts),
         dop!("0xF4 NOPE"          , &CPU::nonexistant),
-        dop!("PUSH AF"            , &CPU::unimplemented),
+        dop!("PUSH AF"            , &CPU::stack_push_af),
         dop!("OR {:#2X}"     , u8 , &CPU::unimplemented_8),
         dop!("RST 30H"            , &CPU::unimplemented),
         dop!("LD HL,SP+{:#2X}", u8, &CPU::unimplemented_8),
@@ -478,7 +487,15 @@ impl CPU {
         let op_code = self.fetch_byte();
         let op = &CPU::OPS[op_code as usize];
         let op_impl = op.execute;
-        op_impl(self)
+
+        let time = time::Duration::from_millis(100);
+        thread::sleep(time);
+
+        let ticks = op_impl(self);
+
+        println!("--> {:#4X}", self.regs.pc);
+
+        return ticks;
     }
 
     fn fetch_byte(&mut self) -> u8 {
@@ -697,32 +714,28 @@ impl CPU {
 
     fn jump_nz(&mut self, addr:u16) -> usize {
         if !self.regs.get_flag(Z) {
-            self.regs.pc = addr;
-            return 4
+            return self.jump(addr)
         }
         2
     }
 
     fn jump_nc(&mut self, addr:u16) -> usize {
         if !self.regs.get_flag(C) {
-            self.regs.pc = addr;
-            return 4
+            return self.jump(addr)
         }
         2
     }
 
     fn jump_z(&mut self, addr:u16) -> usize {
         if self.regs.get_flag(Z) {
-            self.regs.pc = addr;
-            return 4
+            return self.jump(addr)
         }
         2
     }
 
     fn jump_c(&mut self, addr:u16) -> usize {
         if self.regs.get_flag(C) {
-            self.regs.pc = addr;
-            return 4
+            return self.jump(addr)
         }
         2
     }
@@ -730,6 +743,39 @@ impl CPU {
     fn jump(&mut self, addr:u16) -> usize {
         self.regs.pc = addr;
         4
+    }
+
+    fn relative_jump_nz(&mut self, addr:i8) -> usize {
+        if !self.regs.get_flag(Z) {
+            return self.relative_jump(addr)
+        }
+        2
+    }
+
+    fn relative_jump_nc(&mut self, addr:i8) -> usize {
+        if !self.regs.get_flag(C) {
+            return self.relative_jump(addr)
+        }
+        2
+    }
+
+    fn relative_jump_z(&mut self, addr:i8) -> usize {
+        if self.regs.get_flag(Z) {
+            return self.relative_jump(addr)
+        }
+        2
+    }
+
+    fn relative_jump_c(&mut self, addr:i8) -> usize {
+        if self.regs.get_flag(C) {
+            return self.relative_jump(addr)
+        }
+        2
+    }
+
+    fn relative_jump(&mut self, addr:i8) -> usize {
+        self.regs.pc = (self.regs.pc as i16 + addr as i16) as u16;
+        3
     }
 
     // Stack
@@ -773,38 +819,36 @@ impl CPU {
 
     fn stack_call_nz(&mut self, value:u16) -> usize {
         if !self.regs.get_flag(Z) {
-            self.stack_push(value);
-            return 6
+            return self.stack_call(value)
         }
         3
     }
 
     fn stack_call_nc(&mut self, value:u16) -> usize {
         if !self.regs.get_flag(C) {
-            self.stack_push(value);
-            return 6
+            return self.stack_call(value)
         }
         3
     }
 
     fn stack_call_z(&mut self, value:u16) -> usize {
         if self.regs.get_flag(Z) {
-            self.stack_push(value);
-            return 6
+            return self.stack_call(value)
         }
         3
     }
 
     fn stack_call_c(&mut self, value:u16) -> usize {
         if self.regs.get_flag(C) {
-            self.stack_push(value);
-            return 6
+            return self.stack_call(value)
         }
         3
     }
 
     fn stack_call(&mut self, value:u16) -> usize {
-        self.stack_push(value);
+        let next_op = self.regs.pc + 2;
+        self.stack_push(next_op);
+        self.regs.pc = value;
         return 6
     }
 
@@ -812,6 +856,30 @@ impl CPU {
         let result = self.mmu.read_word(self.regs.sp);
         self.regs.sp += 2;
         result
+    }
+
+    fn stack_push_af(&mut self) -> usize {
+        let value = self.regs.get_af();
+        self.stack_push(value);
+        4
+    }
+
+    fn stack_push_bc(&mut self) -> usize {
+        let value = self.regs.get_bc();
+        self.stack_push(value);
+        4
+    }
+
+    fn stack_push_de(&mut self) -> usize {
+        let value = self.regs.get_de();
+        self.stack_push(value);
+        4
+    }
+
+    fn stack_push_hl(&mut self) -> usize {
+        let value = self.regs.get_hl();
+        self.stack_push(value);
+        4
     }
 
     fn stack_push(&mut self, value:u16) {

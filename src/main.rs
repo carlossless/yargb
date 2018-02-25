@@ -1,9 +1,12 @@
 #![crate_name = "yargb"]
 
+extern crate num;
+
 mod mbc;
 mod mmu;
 mod cpu;
 mod registers;
+mod utils;
 
 use std::io::prelude::*;
 use std::fs::File;

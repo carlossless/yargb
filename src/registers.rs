@@ -21,6 +21,7 @@ pub enum Flag {
 }
 
 pub enum WordRegister {
+    AF,
     BC,
     DE,
     HL,
@@ -43,6 +44,10 @@ impl Registers {
         }
     }
 
+    pub fn get_af(&mut self) -> u16 {
+        ((self.a as u16) << 8) | (self.f as u16)
+    }
+
     pub fn get_bc(&mut self) -> u16 {
         ((self.b as u16) << 8) | (self.c as u16)
     }
@@ -53,6 +58,11 @@ impl Registers {
 
     pub fn get_hl(&mut self) -> u16 {
         ((self.h as u16) << 8) | (self.l as u16)
+    }
+
+    pub fn set_af(&mut self, value: u16) {
+        self.a = (value >> 8) as u8;
+        self.f = (value & 0xff) as u8;
     }
 
     pub fn set_bc(&mut self, value: u16) {
@@ -72,6 +82,7 @@ impl Registers {
 
     pub fn set(&mut self, register: WordRegister, value: u16) {
         match register {
+            WordRegister::AF => self.set_af(value),
             WordRegister::BC => self.set_bc(value),
             WordRegister::DE => self.set_de(value),
             WordRegister::HL => self.set_hl(value),
@@ -81,6 +92,7 @@ impl Registers {
 
     pub fn get(&mut self, register: WordRegister) -> u16 {
         match register {
+            WordRegister::AF => self.get_af(),
             WordRegister::BC => self.get_bc(),
             WordRegister::DE => self.get_de(),
             WordRegister::HL => self.get_hl(),

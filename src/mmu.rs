@@ -22,11 +22,11 @@ impl MMU {
             video_ram: [0; 0x2000],
             work_ram: [0; 0x2000],
             timer_stub: [0; 0x0004],
-            interupt_flags: 0,
-            interupt_enable: 0,
-            sound_flags: 0,
-            sound_output: 0,
-            channel_control: 0
+            interupt_flags: 0x00,
+            interupt_enable: 0x00,
+            sound_flags: 0xF1, //0xF0 for SGB
+            sound_output: 0x00,
+            channel_control: 0x00
         }
     }
 
@@ -40,6 +40,7 @@ impl MMU {
             0xFF24 => self.channel_control,
             0xFF25 => self.sound_output,
             0xFF26 => self.sound_flags,
+            0xFF44 => { println!("lcdc_y_coordinate"); 0 }
             0xFFFF => self.interupt_enable,
             other => panic!("MMU for {:2X} is not implemented", other)
         }
@@ -54,11 +55,12 @@ impl MMU {
             0x8000 ... 0x9FFF => { self.video_ram[(addr - 0x8000) as usize] = value; },
             0xC000 ... 0xDFFF => { self.work_ram[(addr - 0xC000) as usize] = value; },
             0xFF04 ... 0xFF07 => { self.timer_stub[(addr - 0xFF04) as usize] = value; },
-            0xFF0F => { self.interupt_flags = value; }
-            0xFF24 => { self.channel_control = value; }
-            0xFF25 => { self.sound_output = value; }
-            0xFF26 => { self.sound_flags = value; }
-            0xFFFF => { self.interupt_enable = value; }
+            0xFF0F => { self.interupt_flags = value; println!("interupt_flags {:b}", value); }
+            0xFF24 => { self.channel_control = value; println!("channel_control {:b}", value); }
+            0xFF25 => { self.sound_output = value; println!("sound_output {:b}", value); }
+            0xFF26 => { self.sound_flags = value; println!("sound_flags {:b}", value); }
+            0xFF44 => { println!("lcdc_y_coordinate {:#2X}", value);  }
+            0xFFFF => { self.interupt_enable = value; println!("interupt_enable {:b}", value); }
             other => panic!("MMU for {:2X} is not implemented", other)
         }
     }
