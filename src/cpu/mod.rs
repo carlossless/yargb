@@ -74,10 +74,10 @@ impl CPU {
         dop!("DEC BC"              , &dec_word!(BC)), // 0x0B DEC BC
         dop!("INC C"               , &inc_byte!(c)), // 0x0C INC C
         dop!("DEC C"               , &dec_byte!(c)), // 0x0D DEC C
-        dop!("LD C,{:#04X}"    , u8 , &|cpu: &mut CPU, value| { cpu.regs.c = value; 2 }), // 0x0E LD C,d8
+        dop!("LD C,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.c = value; 2 }), // 0x0E LD C,d8
         dop!("RRCA"                , &CPU::rotate_right_circular_accumulator), // 0x0F RRCA
 
-        dop!("STOP"                , &CPU::unimplemented), // 0x10 STOP
+        dop!("STOP"                , &CPU::stop), // 0x10 STOP
         dop!("LD DE,{:#06X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.set_de(value); 3 }), // 0x11 LD DE,d16
         dop!("LD (DE),A"           , &|cpu: &mut CPU| { cpu.mmu.write_byte(cpu.regs.get_de(), cpu.regs.a); 2 }), // 0x12 LD (DE),A
         dop!("INC DE"              , &inc_word!(DE)), // 0x13 INC DE
@@ -96,7 +96,7 @@ impl CPU {
 
         dop!("JR NZ,{:#02X}"  , i8 , &CPU::relative_jump_nz), // 0x20 JR NZ,r8
         dop!("LD HL,{:#06X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.set_hl(value); 3 }), // 0x21 LD HL,d16
-        dop!("LD (HL+),A"          , &CPU::unimplemented), // 0x22 LD (HL+),A
+        dop!("LD (HL+),A"          , &|cpu: &mut CPU| { let addr = cpu.regs.get_hl() + 1; cpu.mmu.write_byte(addr, cpu.regs.a); cpu.regs.set_hl(addr); 2 }), // 0x22 LD (HL+),A
         dop!("INC HL"              , &inc_word!(HL)), // 0x23 INC HL
         dop!("INC H"               , &inc_byte!(h)), // 0x24 INC H
         dop!("DEC H"               , &dec_byte!(h)), // 0x25 DEC H
@@ -265,7 +265,7 @@ impl CPU {
         dop!("CP A,A"              , &cp!(a,a)),
 
         dop!("RET NZ"              , &CPU::stack_ret_nz),
-        dop!("POP BC"              , &CPU::unimplemented),
+        dop!("POP BC"              , &|cpu: &mut CPU| { let value = cpu.stack_pop(); cpu.regs.set_bc(value); 3 }),
         dop!("JP NZ,{:#06X}"  , u16, &CPU::jump_nz),
         dop!("JP {:#06X}"     , u16, &CPU::jump),
         dop!("CALL NZ,{:#06X}", u16, &CPU::stack_call_nz),
@@ -282,12 +282,12 @@ impl CPU {
         dop!("RST 08H"             , &CPU::unimplemented),
 
         dop!("RET NC"              , &CPU::stack_ret_nc),
-        dop!("POP DE"              , &CPU::unimplemented),
+        dop!("POP DE"              , &|cpu: &mut CPU| { let value = cpu.stack_pop(); cpu.regs.set_de(value); 3 }),
         dop!("JP NC,{:#06X}"  , u16, &CPU::jump_nc),
         dop!("0xD3 NOPE"           , &CPU::nonexistant),
         dop!("CALL NC,{:#06X}", u16, &CPU::stack_call_nc),
         dop!("PUSH DE"             , &CPU::stack_push_de),
-        dop!("SUB A,{:#04X}"  , u8 , &CPU::unimplemented_8),
+        dop!("SUB A,{:#04X}"  , u8 , &|cpu: &mut CPU, value| { let a = cpu.regs.a; cpu.regs.a = cpu.alu_sub_byte(a, value); 2 }),
         dop!("RST 10H"             , &CPU::unimplemented),
         dop!("RET C"               , &CPU::stack_ret_c),
         dop!("RETI"                , &CPU::unimplemented),
@@ -299,7 +299,7 @@ impl CPU {
         dop!("RST 18H"             , &CPU::unimplemented),
 
         dop!("LDH ({:#04X}),A", u8 , &|cpu: &mut CPU, addr| { let value = cpu.regs.a; cpu.mmu.write_byte(addr as u16 + 0xFF00, value); 3 }),
-        dop!("POP HL"              , &CPU::unimplemented),
+        dop!("POP HL"              , &|cpu: &mut CPU| { let value = cpu.stack_pop(); cpu.regs.set_hl(value); 3 }),
         dop!("LD (C),A"            , &|cpu: &mut CPU| { let addr = cpu.regs.c; let value = cpu.regs.a; cpu.mmu.write_byte(addr as u16 + 0xFF00, value); 2 }),
         dop!("0xE3 NOPE"           , &CPU::nonexistant),
         dop!("0xE4 NOPE"           , &CPU::nonexistant),
@@ -355,7 +355,14 @@ impl CPU {
 
         let ticks = op_impl(self);
 
-        println!("--> {:#06X}", self.regs.pc);
+        println!("af: {:#06X}, bc: {:#06X}, de: {:#06X}, hl: {:#06X}, sp: {:#06X}, pc: {:#06X}",
+            self.regs.get_af(),
+            self.regs.get_bc(),
+            self.regs.get_de(),
+            self.regs.get_hl(),
+            self.regs.sp,
+            self.regs.pc
+        );
 
         return ticks;
     }
@@ -386,6 +393,11 @@ impl CPU {
     fn disable_interupts(&mut self) -> usize {
         println!("INTERUPTS NOT IMPLEMENTED YET");
         1
+    }
+
+    fn stop(&mut self) -> usize {
+       println!("STOP not implemented");
+       1 
     }
 
     fn nonexistant(&mut self) -> usize {

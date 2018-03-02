@@ -4,4 +4,6 @@ version = "0.1.0"
 authors = ["Karolis Stasaitis <contact@carlossless.io>"]
 
 [dependencies]
-num = "0.1.42"
+num = "*"
+glutin = "*"
+glium = "*"
