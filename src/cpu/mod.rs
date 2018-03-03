@@ -202,7 +202,7 @@ impl CPU {
         dop!("ADD A,E"             , &alu_add!(a,e)), // 0x83 ADD A,E
         dop!("ADD A,H"             , &alu_add!(a,h)), // 0x84 ADD A,H
         dop!("ADD A,L"             , &alu_add!(a,l)), // 0x85 ADD A,L
-        dop!("ADD A,(HL)"          , &CPU::unimplemented), // 0x86 ADD A,(HL)
+        dop!("ADD A,(HL)"          , &|cpu: &mut CPU| { let a = cpu.regs.a; let value = cpu.mmu.read_byte(cpu.regs.get_hl()); cpu.regs.a = cpu.alu_add_byte(a, value); 2 }), // 0x86 ADD A,(HL)
         dop!("ADD A,A"             , &alu_add!(a,a)), // 0x87 ADD A,A
         dop!("ADC A,B"             , &alu_adc!(a,b)), // 0x88 ADC A,B
         dop!("ADC A,C"             , &alu_adc!(a,c)), // 0x89 ADC A,C
@@ -219,7 +219,7 @@ impl CPU {
         dop!("SUB A,E"             , &alu_sub!(a,e)),
         dop!("SUB A,H"             , &alu_sub!(a,h)),
         dop!("SUB A,L"             , &alu_sub!(a,l)),
-        dop!("SUB A,(HL)"          , &CPU::unimplemented),
+        dop!("SUB A,(HL)"          , &|cpu: &mut CPU| { let a = cpu.regs.a; let value = cpu.mmu.read_byte(cpu.regs.get_hl()); cpu.regs.a = cpu.alu_sub_byte(a, value); 2 }),
         dop!("SUB A,A"             , &alu_sub!(a,a)),
         dop!("SBC A,B"             , &alu_sbc!(a,b)),
         dop!("SBC A,C"             , &alu_sbc!(a,c)),
@@ -227,7 +227,7 @@ impl CPU {
         dop!("SBC A,E"             , &alu_sbc!(a,e)),
         dop!("SBC A,H"             , &alu_sbc!(a,h)),
         dop!("SBC A,L"             , &alu_sbc!(a,l)),
-        dop!("SBC A,(HL)"          , &CPU::unimplemented),
+        dop!("SBC A,(HL)"          , &|cpu: &mut CPU| { let a = cpu.regs.a; let value = cpu.mmu.read_byte(cpu.regs.get_hl()); cpu.regs.a = cpu.alu_sub_byte_with_carry(a, value); 2 }),
         dop!("SBC A,A"             , &alu_sbc!(a,a)),
 
         dop!("AND A,B"             , &alu_and!(a,b)),
@@ -236,7 +236,7 @@ impl CPU {
         dop!("AND A,E"             , &alu_and!(a,e)),
         dop!("AND A,H"             , &alu_and!(a,h)),
         dop!("AND A,L"             , &alu_and!(a,l)),
-        dop!("AND A,(HL)"          , &|cpu: &mut CPU| { cpu.regs.a = cpu.mmu.read_byte(cpu.regs.get_hl()); 2 }),
+        dop!("AND A,(HL)"          , &|cpu: &mut CPU| { let a = cpu.regs.a; let value = cpu.mmu.read_byte(cpu.regs.get_hl()); cpu.regs.a = cpu.alu_and(a, value); 2 }),
         dop!("AND A,A"             , &alu_xor!(a,a)),
         dop!("XOR A,B"             , &alu_xor!(a,b)),
         dop!("XOR A,C"             , &alu_xor!(a,c)),
@@ -253,7 +253,7 @@ impl CPU {
         dop!("OR A,E"              , &alu_or!(a,e)),
         dop!("OR A,H"              , &alu_or!(a,h)),
         dop!("OR A,L"              , &alu_or!(a,l)),
-        dop!("OR A,(HL)"           , &CPU::unimplemented),
+        dop!("OR A,(HL)"           , &|cpu: &mut CPU| { let a = cpu.regs.a; let value = cpu.mmu.read_byte(cpu.regs.get_hl()); cpu.regs.a = cpu.alu_or(a, value); 2 }),
         dop!("OR A,A"              , &alu_or!(a,a)),
         dop!("CP A,B"              , &alu_cp!(a,b)),
         dop!("CP A,C"              , &alu_cp!(a,c)),
@@ -261,7 +261,7 @@ impl CPU {
         dop!("CP A,E"              , &alu_cp!(a,e)),
         dop!("CP A,H"              , &alu_cp!(a,h)),
         dop!("CP A,L"              , &alu_cp!(a,l)),
-        dop!("CP A,(HL)"           , &CPU::unimplemented),
+        dop!("CP A,(HL)"           , &|cpu: &mut CPU| { let a = cpu.regs.a; let value = cpu.mmu.read_byte(cpu.regs.get_hl()); cpu.alu_cp(a, value); 2 }),
         dop!("CP A,A"              , &alu_cp!(a,a)),
 
         dop!("RET NZ"              , &CPU::stack_ret_nz),
