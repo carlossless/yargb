@@ -1,7 +1,7 @@
 use cpu::CPU;
 use registers::Flag::{ Z, N, H, C };
 
-macro_rules! inc_byte {
+macro_rules! alu_inc_byte {
     ($register:ident) => (
         |cpu: &mut CPU| {
             let mut v = cpu.regs.$register;
@@ -12,7 +12,7 @@ macro_rules! inc_byte {
     )
 }
 
-macro_rules! dec_byte {
+macro_rules! alu_dec_byte {
     ($register:ident) => (
         |cpu: &mut CPU| {
             let mut v = cpu.regs.$register;
@@ -24,7 +24,7 @@ macro_rules! dec_byte {
 }
 
 // TODO: could be replaced by patern matched functions instead of the intermal match
-macro_rules! inc_word {
+macro_rules! alu_inc_word {
     ($register:ident) => (
         |cpu: &mut CPU| {
             let mut v = cpu.regs.get($register);
@@ -36,7 +36,7 @@ macro_rules! inc_word {
 }
 
 // TODO: could be replaced by patern matched functions instead of the intermal match
-macro_rules! dec_word {
+macro_rules! alu_dec_word {
     ($register:ident) => (
         |cpu: &mut CPU| {
             let mut v = cpu.regs.get($register);
@@ -47,7 +47,7 @@ macro_rules! dec_word {
     )
 }
 
-macro_rules! add {
+macro_rules! alu_add {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
             let addend = cpu.regs.$source_register;
@@ -59,7 +59,7 @@ macro_rules! add {
     )
 }
 
-macro_rules! adc {
+macro_rules! alu_adc {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
             let addend = cpu.regs.$source_register;
@@ -71,7 +71,7 @@ macro_rules! adc {
     )
 }
 
-macro_rules! sub {
+macro_rules! alu_sub {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
             let addend = cpu.regs.$source_register;
@@ -83,7 +83,7 @@ macro_rules! sub {
     )
 }
 
-macro_rules! sbc {
+macro_rules! alu_sbc {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
             let addend = cpu.regs.$source_register;
@@ -95,7 +95,7 @@ macro_rules! sbc {
     )
 }
 
-macro_rules! and {
+macro_rules! alu_and {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
@@ -107,7 +107,7 @@ macro_rules! and {
     )
 }
 
-macro_rules! xor {
+macro_rules! alu_xor {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
@@ -119,7 +119,7 @@ macro_rules! xor {
     )
 }
 
-macro_rules! or {
+macro_rules! alu_or {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
@@ -131,7 +131,7 @@ macro_rules! or {
     )
 }
 
-macro_rules! cp {
+macro_rules! alu_cp {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
