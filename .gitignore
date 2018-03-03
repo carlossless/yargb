@@ -2,4 +2,5 @@
 roms/
 /target/
 .idea/
+.vscode/
 **/*.rs.bk

@@ -68,10 +68,10 @@ impl CPU {
     }
 
     pub fn stack_call(&mut self, value:u16) -> usize {
-        let next_op = self.regs.pc + 2;
+        let next_op = self.regs.pc; // value taken before hand
         self.stack_push(next_op);
         self.regs.pc = value;
-        return 6
+        6
     }
 
     pub fn stack_pop(&mut self) -> u16 {

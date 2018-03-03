@@ -215,7 +215,7 @@ impl CPU {
         let result = lhs.wrapping_add(rhs).wrapping_add(carry);
         self.regs.set_flag(Z, result == 0);
         self.regs.set_flag(N, true);
-        self.regs.set_flag(H, ((lhs & 0x0F) < (rhs & 0x0F).wrapping_add(carry)));
+        self.regs.set_flag(H, (lhs & 0x0F) < (rhs & 0x0F).wrapping_add(carry));
         self.regs.set_flag(C, (lhs as u16) < (rhs as u16) + (carry as u16));
         result
     }

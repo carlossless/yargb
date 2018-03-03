@@ -1,12 +1,15 @@
-
 pub struct GPU {
-    video_ram: [u8; 0x2000]
+    video_ram: [u8; 0x2000],
+    pub bgp: u8,
+    pub scy: u8
 }
 
 impl GPU {
     pub fn new() -> GPU {
         GPU {
-            video_ram: [0; 0x2000]
+            video_ram: [0; 0x2000],
+            bgp: 0,
+            scy: 0
         }
     }
 
