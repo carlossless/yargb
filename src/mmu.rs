@@ -50,8 +50,9 @@ impl MMU {
             0xFF25 => self.sound_output,
             0xFF26 => self.sound_flags,
             0xFF40 => self.lcd_control,
-            0xFF43 => { println!("lcdc_x_coordinate"); 0x90 } // TODO: needs to be implemented on GPU when drawing the line
-            0xFF44 => { println!("lcdc_y_coordinate"); 0x90 } // TODO: needs to be implemented on GPU when drawing the line
+            0xFF42 => self.gpu.scy,
+            0xFF43 => self.gpu.scx,
+            0xFF44 => { println!("lcdc_y_coordinate"); 0x10 } // TODO: needs to be implemented on GPU when drawing the line
             0xFF4C ... 0xFF7F => self.unused_io[(addr - 0xFF4C) as usize], // TODO: has GPU functions
             0xFF80 ... 0xFFFE => self.high_ram[(addr - 0xFF80) as usize],
             0xFFFF => self.interupt_enable,
@@ -77,7 +78,7 @@ impl MMU {
             0xFF26 => { self.sound_flags = value; println!("sound_flags {:b}", value); }
             0xFF40 => { self.lcd_control = value; }
             0xFF42 => self.gpu.scy = value,
-            0xFF43 => { println!("lcdc_x_coordinate {:#2X}", value); } // TODO: needs to be implemented on GPU when drawing the line
+            0xFF43 => self.gpu.scx = value,
             0xFF44 => { println!("lcdc_y_coordinate {:#2X}", value); }  // TODO: needs to be implemented on GPU when drawing the line
             0xFF47 => self.gpu.bgp = value,
             0xFF4C ... 0xFF7F => { self.unused_io[(addr - 0xFF4C) as usize] = value; println!("unused_io {:b}", value); }
