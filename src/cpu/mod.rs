@@ -4,9 +4,12 @@ use mmu::MMU;
 use utils::format::FormatAsSigned;
 
 #[macro_use]
+mod load;
+#[macro_use]
 mod alu;
 mod stack;
 mod jump;
+#[macro_use]
 mod shift;
 
 pub struct CPU {
@@ -49,15 +52,6 @@ macro_rules! dop {
     });
 }
 
-macro_rules! ld {
-    ($source_register:ident, $target_register:ident) => (
-        |cpu: &mut CPU| {
-            cpu.regs.$source_register = cpu.regs.$target_register;
-            1
-        }
-    )
-}
-
 impl CPU {
     const OPS: &'static [Operation] = &[
         dop!("NOP"                 , &CPU::nop), // 0x00 NOP
@@ -96,7 +90,7 @@ impl CPU {
 
         dop!("JR NZ,{:#02X}"  , i8 , &CPU::relative_jump_nz), // 0x20 JR NZ,r8
         dop!("LD HL,{:#06X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.set_hl(value); 3 }), // 0x21 LD HL,d16
-        dop!("LD (HL+),A"          , &|cpu: &mut CPU| { let addr = cpu.regs.get_hl() + 1; cpu.mmu.write_byte(addr, cpu.regs.a); cpu.regs.set_hl(addr); 2 }), // 0x22 LD (HL+),A
+        dop!("LD (HL+),A"          , &|cpu: &mut CPU| { let addr = cpu.regs.get_hl(); cpu.mmu.write_byte(addr, cpu.regs.a); cpu.regs.set_hl(addr + 1); 2 }), // 0x22 LD (HL+),A
         dop!("INC HL"              , &alu_inc_word!(HL)), // 0x23 INC HL
         dop!("INC H"               , &alu_inc_byte!(h)), // 0x24 INC H
         dop!("DEC H"               , &alu_dec_byte!(h)), // 0x25 DEC H
@@ -104,7 +98,7 @@ impl CPU {
         dop!("DDA"                 , &CPU::alu_decimal_adjust_accumulator), // 0x27 DAA
         dop!("JR Z,{:#04X}"   , i8 , &CPU::relative_jump_z), // 0x28 JR Z,r8
         dop!("ADD HL,HL"           , &|cpu: &mut CPU| { let v = cpu.regs.get_hl(); cpu.alu_add_to_hl(v); 2 }), // 0x29 ADD HL,HL
-        dop!("LD A,(HL+)"          , &|cpu: &mut CPU| { let addr = cpu.regs.get_hl() + 1; cpu.regs.a = cpu.mmu.read_byte(addr); cpu.regs.set_hl(addr); 2 }), // 0x2A LD A,(HL+)
+        dop!("LD A,(HL+)"          , &|cpu: &mut CPU| { let addr = cpu.regs.get_hl(); cpu.regs.a = cpu.mmu.read_byte(addr); cpu.regs.set_hl(addr + 1); 2 }), // 0x2A LD A,(HL+)
         dop!("DEC HL"              , &alu_dec_word!(HL)), // 0x2B DEC HL
         dop!("INC L"               , &alu_inc_byte!(l)), // 0x2C INC L
         dop!("DEC L"               , &alu_dec_byte!(l)), // 0x2D DEC L
@@ -113,7 +107,7 @@ impl CPU {
 
         dop!("JR NC,{:#04X}"  , i8 , &CPU::relative_jump_nc), // 0x30 JR NC,r8
         dop!("LD SP,{:#06X}"  , u16, &|cpu: &mut CPU, value| { cpu.regs.sp = value; 3 }), // 0x31 LD SP,d16
-        dop!("LD (HL-),A"          , &|cpu: &mut CPU| { let addr = cpu.regs.get_hl() + 2; cpu.mmu.write_byte(addr, cpu.regs.a); cpu.regs.set_hl(addr); 2 }), // 0x32 LD (HL-),A
+        dop!("LD (HL-),A"          , &|cpu: &mut CPU| { let addr = cpu.regs.get_hl(); cpu.mmu.write_byte(addr, cpu.regs.a); cpu.regs.set_hl(addr - 1); 2 }), // 0x32 LD (HL-),A
         dop!("INC SP"              , &alu_inc_word!(SP)), // 0x34 INC SP
         dop!("INC (HL)"            , &|cpu: &mut CPU| { let a = cpu.regs.get_hl(); let mut v = cpu.mmu.read_byte(a); cpu.alu_inc_byte(&mut v); cpu.mmu.write_byte(a, v); 3 }), // 0x34 INC (HL)
         dop!("DEC (HL)"            , &|cpu: &mut CPU| { let a = cpu.regs.get_hl(); let mut v = cpu.mmu.read_byte(a); cpu.alu_dec_byte(&mut v); cpu.mmu.write_byte(a, v); 3 }), // 0x35 DEC (HL)
@@ -128,56 +122,56 @@ impl CPU {
         dop!("LD A,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.a = value; 2 }), // 0x3E LD A,d8
         dop!("CCF"                 , &CPU::alu_complement_carry_flag), // 0x3F CCF
 
-        dop!("LD B,B"              , &ld!(b,b)), // 0x40 LD B,B
-        dop!("LD B,C"              , &ld!(b,c)), // 0x41 LD B,C
-        dop!("LD B,D"              , &ld!(b,d)), // 0x42 LD B,D
-        dop!("LD B,E"              , &ld!(b,e)), // 0x43 LD B,E
-        dop!("LD B,H"              , &ld!(b,h)), // 0x44 LD B,H
-        dop!("LD B,L"              , &ld!(b,l)), // 0x45 LD B,L
+        dop!("LD B,B"              , &load!(b,b)), // 0x40 LD B,B
+        dop!("LD B,C"              , &load!(b,c)), // 0x41 LD B,C
+        dop!("LD B,D"              , &load!(b,d)), // 0x42 LD B,D
+        dop!("LD B,E"              , &load!(b,e)), // 0x43 LD B,E
+        dop!("LD B,H"              , &load!(b,h)), // 0x44 LD B,H
+        dop!("LD B,L"              , &load!(b,l)), // 0x45 LD B,L
         dop!("LD B,(HL)"           , &|cpu: &mut CPU| { cpu.regs.b = cpu.mmu.read_byte(cpu.regs.get_hl()); 2 }), // 0x46 LD B,(HL)
-        dop!("LD B,A"              , &ld!(b,a)), // 0x47 LD B,A
-        dop!("LD C,B"              , &ld!(c,b)), // 0x48 LD C,B
-        dop!("LD C,C"              , &ld!(c,c)), // 0x49 LD C,C
-        dop!("LD C,D"              , &ld!(c,d)), // 0x4A LD C,D
-        dop!("LD C,E"              , &ld!(c,e)), // 0x4B LD C,E
-        dop!("LD C,H"              , &ld!(c,h)), // 0x4C LD C,H
-        dop!("LD C,L"              , &ld!(c,l)), // 0x4D LD C,L
+        dop!("LD B,A"              , &load!(b,a)), // 0x47 LD B,A
+        dop!("LD C,B"              , &load!(c,b)), // 0x48 LD C,B
+        dop!("LD C,C"              , &load!(c,c)), // 0x49 LD C,C
+        dop!("LD C,D"              , &load!(c,d)), // 0x4A LD C,D
+        dop!("LD C,E"              , &load!(c,e)), // 0x4B LD C,E
+        dop!("LD C,H"              , &load!(c,h)), // 0x4C LD C,H
+        dop!("LD C,L"              , &load!(c,l)), // 0x4D LD C,L
         dop!("LD C,(HL)"           , &|cpu: &mut CPU| { cpu.regs.c = cpu.mmu.read_byte(cpu.regs.get_hl()); 2 }), // 0x4E LD C,(HL)
-        dop!("LD C,A"              , &ld!(b,a)), // 0x4F LD C,A
+        dop!("LD C,A"              , &load!(b,a)), // 0x4F LD C,A
 
-        dop!("LD D,B"              , &ld!(d,b)), // 0x50 LD B,B
-        dop!("LD D,C"              , &ld!(d,c)), // 0x51 LD B,C
-        dop!("LD D,D"              , &ld!(d,d)), // 0x52 LD B,D
-        dop!("LD D,E"              , &ld!(d,e)), // 0x53 LD B,E
-        dop!("LD D,H"              , &ld!(d,h)), // 0x54 LD B,H
-        dop!("LD D,L"              , &ld!(d,l)), // 0x55 LD B,L
+        dop!("LD D,B"              , &load!(d,b)), // 0x50 LD B,B
+        dop!("LD D,C"              , &load!(d,c)), // 0x51 LD B,C
+        dop!("LD D,D"              , &load!(d,d)), // 0x52 LD B,D
+        dop!("LD D,E"              , &load!(d,e)), // 0x53 LD B,E
+        dop!("LD D,H"              , &load!(d,h)), // 0x54 LD B,H
+        dop!("LD D,L"              , &load!(d,l)), // 0x55 LD B,L
         dop!("LD D,(HL)"           , &|cpu: &mut CPU| { cpu.regs.d = cpu.mmu.read_byte(cpu.regs.get_hl()); 2 }), // 0x56 LD D,(HL)
-        dop!("LD D,A"              , &ld!(d,a)), // 0x57 LD B,A
-        dop!("LD E,B"              , &ld!(e,b)), // 0x58 LD C,B
-        dop!("LD E,C"              , &ld!(e,c)), // 0x59 LD C,C
-        dop!("LD E,D"              , &ld!(e,d)), // 0x5A LD C,D
-        dop!("LD E,E"              , &ld!(e,e)), // 0x5B LD C,E
-        dop!("LD E,H"              , &ld!(e,h)), // 0x5C LD C,H
-        dop!("LD E,L"              , &ld!(e,l)), // 0x5D LD C,L
+        dop!("LD D,A"              , &load!(d,a)), // 0x57 LD B,A
+        dop!("LD E,B"              , &load!(e,b)), // 0x58 LD C,B
+        dop!("LD E,C"              , &load!(e,c)), // 0x59 LD C,C
+        dop!("LD E,D"              , &load!(e,d)), // 0x5A LD C,D
+        dop!("LD E,E"              , &load!(e,e)), // 0x5B LD C,E
+        dop!("LD E,H"              , &load!(e,h)), // 0x5C LD C,H
+        dop!("LD E,L"              , &load!(e,l)), // 0x5D LD C,L
         dop!("LD E,(HL)"           , &|cpu: &mut CPU| { cpu.regs.e = cpu.mmu.read_byte(cpu.regs.get_hl()); 2 }), // 0x5E LD E,(HL)
-        dop!("LD E,A"              , &ld!(e,a)), // 0x5F LD C,A
+        dop!("LD E,A"              , &load!(e,a)), // 0x5F LD C,A
 
-        dop!("LD H,B"              , &ld!(h,b)), // 0x60 LD H,B
-        dop!("LD H,C"              , &ld!(h,c)), // 0x61 LD H,C
-        dop!("LD H,D"              , &ld!(h,d)), // 0x62 LD H,D
-        dop!("LD H,E"              , &ld!(h,e)), // 0x63 LD H,E
-        dop!("LD H,H"              , &ld!(h,h)), // 0x64 LD H,H
-        dop!("LD H,L"              , &ld!(h,l)), // 0x65 LD H,L
+        dop!("LD H,B"              , &load!(h,b)), // 0x60 LD H,B
+        dop!("LD H,C"              , &load!(h,c)), // 0x61 LD H,C
+        dop!("LD H,D"              , &load!(h,d)), // 0x62 LD H,D
+        dop!("LD H,E"              , &load!(h,e)), // 0x63 LD H,E
+        dop!("LD H,H"              , &load!(h,h)), // 0x64 LD H,H
+        dop!("LD H,L"              , &load!(h,l)), // 0x65 LD H,L
         dop!("LD H,(HL)"           , &|cpu: &mut CPU| { cpu.regs.h = cpu.mmu.read_byte(cpu.regs.get_hl()); 2 }), // 0x66 LD H,(HL)
-        dop!("LD H,A"              , &ld!(h,a)), // 0x67 LD H,A
-        dop!("LD L,B"              , &ld!(l,b)), // 0x68 LD L,B
-        dop!("LD L,C"              , &ld!(l,c)), // 0x69 LD L,C
-        dop!("LD L,D"              , &ld!(l,d)), // 0x6A LD L,D
-        dop!("LD L,E"              , &ld!(l,e)), // 0x6B LD L,E
-        dop!("LD L,H"              , &ld!(l,h)), // 0x6C LD L,H
-        dop!("LD L,L"              , &ld!(l,l)), // 0x6D LD L,L
+        dop!("LD H,A"              , &load!(h,a)), // 0x67 LD H,A
+        dop!("LD L,B"              , &load!(l,b)), // 0x68 LD L,B
+        dop!("LD L,C"              , &load!(l,c)), // 0x69 LD L,C
+        dop!("LD L,D"              , &load!(l,d)), // 0x6A LD L,D
+        dop!("LD L,E"              , &load!(l,e)), // 0x6B LD L,E
+        dop!("LD L,H"              , &load!(l,h)), // 0x6C LD L,H
+        dop!("LD L,L"              , &load!(l,l)), // 0x6D LD L,L
         dop!("LD L,(HL)"           , &|cpu: &mut CPU| { cpu.regs.l = cpu.mmu.read_byte(cpu.regs.get_hl()); 2 }), // 0x6E LD L,(HL)
-        dop!("LD L,A"              , &ld!(l,a)), // 0x6F LD L,A
+        dop!("LD L,A"              , &load!(l,a)), // 0x6F LD L,A
 
         dop!("LD (HL),B"           , &|cpu: &mut CPU| { cpu.mmu.write_byte(cpu.regs.get_hl(), cpu.regs.b); 2 }), // 0x70 LD (HL),B
         dop!("LD (HL),C"           , &|cpu: &mut CPU| { cpu.mmu.write_byte(cpu.regs.get_hl(), cpu.regs.c); 2 }), // 0x71 LD (HL),C
@@ -185,16 +179,16 @@ impl CPU {
         dop!("LD (HL),E"           , &|cpu: &mut CPU| { cpu.mmu.write_byte(cpu.regs.get_hl(), cpu.regs.e); 2 }), // 0x73 LD (HL),E
         dop!("LD (HL),H"           , &|cpu: &mut CPU| { cpu.mmu.write_byte(cpu.regs.get_hl(), cpu.regs.h); 2 }), // 0x74 LD (HL),H
         dop!("LD (HL),L"           , &|cpu: &mut CPU| { cpu.mmu.write_byte(cpu.regs.get_hl(), cpu.regs.l); 2 }), // 0x75 LD (HL),L
-        dop!("HALT"                , &CPU::unimplemented), // 0x76 HALT
+        dop!("HALT"                , &CPU::halt), // 0x76 HALT
         dop!("LD (HL),L"           , &|cpu: &mut CPU| { cpu.mmu.write_byte(cpu.regs.get_hl(), cpu.regs.a); 2 }), // 0x77 LD (HL),L
-        dop!("LD A,B"              , &ld!(a,b)), // 0x78 LD A,B
-        dop!("LD A,C"              , &ld!(a,c)), // 0x79 LD A,C
-        dop!("LD A,D"              , &ld!(a,d)), // 0x7A LD A,D
-        dop!("LD A,E"              , &ld!(a,e)), // 0x7B LD A,E
-        dop!("LD A,H"              , &ld!(a,h)), // 0x7C LD A,H
-        dop!("LD A,L"              , &ld!(a,l)), // 0x7D LD A,L
+        dop!("LD A,B"              , &load!(a,b)), // 0x78 LD A,B
+        dop!("LD A,C"              , &load!(a,c)), // 0x79 LD A,C
+        dop!("LD A,D"              , &load!(a,d)), // 0x7A LD A,D
+        dop!("LD A,E"              , &load!(a,e)), // 0x7B LD A,E
+        dop!("LD A,H"              , &load!(a,h)), // 0x7C LD A,H
+        dop!("LD A,L"              , &load!(a,l)), // 0x7D LD A,L
         dop!("LD A,(HL)"           , &|cpu: &mut CPU| { cpu.regs.a = cpu.mmu.read_byte(cpu.regs.get_hl()); 2 }), // 0x7E LD A,(HL)
-        dop!("LD A,A"              , &ld!(a,a)), // 0x7F LD A,A
+        dop!("LD A,A"              , &load!(a,a)), // 0x7F LD A,A
 
         dop!("ADD A,B"             , &alu_add!(a,b)), // 0x80 ADD A,B
         dop!("ADD A,C"             , &alu_add!(a,c)), // 0x81 ADD A,C
@@ -295,7 +289,7 @@ impl CPU {
         dop!("0xDB NOPE"           , &CPU::nonexistant),
         dop!("CALL C,{:#06X}" , u16, &CPU::stack_call_c),
         dop!("0xDD NOPE"           , &CPU::nonexistant),
-        dop!("SBC A,{:#04X}"  , u8 , &CPU::unimplemented_8),
+        dop!("SBC A,{:#04X}"  , u8 , &|cpu: &mut CPU, value| { let a = cpu.regs.a; cpu.regs.a = cpu.alu_sub_byte_with_carry(a, value); 2 }),
         dop!("RST 18H"             , &CPU::unimplemented),
 
         dop!("LDH ({:#04X}),A", u8 , &|cpu: &mut CPU, addr| { let value = cpu.regs.a; cpu.mmu.write_byte(addr as u16 + 0xFF00, value); 3 }),
@@ -304,15 +298,15 @@ impl CPU {
         dop!("0xE3 NOPE"           , &CPU::nonexistant),
         dop!("0xE4 NOPE"           , &CPU::nonexistant),
         dop!("PUSH HL"             , &CPU::stack_push_hl),
-        dop!("AND A,{:#04X}"  , u8 , &|cpu: &mut CPU, value| { cpu.regs.a = value; 2 }),
+        dop!("AND A,{:#04X}"  , u8 , &|cpu: &mut CPU, value| { let a = cpu.regs.a; cpu.regs.a = cpu.alu_and(a, value); 2 }),
         dop!("RST 20H"             , &CPU::unimplemented),
-        dop!("ADD SP,{:#04X}" , u8 , &CPU::unimplemented_8),
+        dop!("ADD SP,{:#04X}" , i8 , &|cpu: &mut CPU, value| { cpu.regs.sp = cpu.alu_add_to_sp(value); 4 }),
         dop!("JP (HL)"             , &|cpu: &mut CPU| { cpu.regs.pc = cpu.mmu.read_word(cpu.regs.get_hl()); 1 }),
         dop!("LD ({:#06X}),A" , u16, &|cpu: &mut CPU, addr| { cpu.mmu.write_byte(addr, cpu.regs.a); 4 }),
         dop!("0xEB NOPE"           , &CPU::nonexistant),
         dop!("0xEC NOPE"           , &CPU::nonexistant),
         dop!("0xED NOPE"           , &CPU::nonexistant),
-        dop!("XOR A,{:#04X}"  , u8 , &CPU::unimplemented_8),
+        dop!("XOR A,{:#04X}"  , u8 , &|cpu: &mut CPU, value| { let a = cpu.regs.a; cpu.regs.a = cpu.alu_xor(a, value); 2 }),
         dop!("RST 28H"             , &CPU::unimplemented),
 
         dop!("LDH A,({:#04X})", u8 , &|cpu: &mut CPU, addr| { cpu.regs.a = cpu.mmu.read_byte(addr as u16 + 0xFF00); 3 }),
@@ -321,9 +315,9 @@ impl CPU {
         dop!("DI"                  , &CPU::enable_interupts),
         dop!("0xF4 NOPE"           , &CPU::nonexistant),
         dop!("PUSH AF"             , &CPU::stack_push_af),
-        dop!("OR {:#04X}"     , u8 , &CPU::unimplemented_8),
+        dop!("OR {:#04X}"     , u8 , &|cpu: &mut CPU, value| { let a = cpu.regs.a; cpu.regs.a = cpu.alu_or(a, value); 2 }),
         dop!("RST 30H"             , &CPU::unimplemented),
-        dop!("LD HL,SP+{:#04X}", u8, &CPU::unimplemented_8),
+        dop!("LD HL,SP+{:#04X}", i8, &|cpu: &mut CPU, value| { let r = cpu.alu_add_to_sp(value); cpu.regs.set_hl(r); 3 }),
         dop!("LD SP,HL"            , &CPU::unimplemented),
         dop!("LD A,({:#06X})" , u16, &|cpu: &mut CPU, addr| { cpu.regs.a = cpu.mmu.read_byte(addr); 4 }),
         dop!("DI"                  , &CPU::disable_interupts),
@@ -359,14 +353,14 @@ impl CPU {
         dop!("RL L"                  , &CPU::unimplemented),
         dop!("RL (HL)"               , &CPU::unimplemented),
         dop!("RL A"                  , &CPU::unimplemented),
-        dop!("RR B"                  , &CPU::unimplemented),
-        dop!("RR C"                  , &CPU::unimplemented),
-        dop!("RR D"                  , &CPU::unimplemented),
-        dop!("RR E"                  , &CPU::unimplemented),
-        dop!("RR H"                  , &CPU::unimplemented),
-        dop!("RR L"                  , &CPU::unimplemented),
+        dop!("RR B"                  , &rotate_right!(b)),
+        dop!("RR C"                  , &rotate_right!(c)),
+        dop!("RR D"                  , &rotate_right!(d)),
+        dop!("RR E"                  , &rotate_right!(e)),
+        dop!("RR H"                  , &rotate_right!(h)),
+        dop!("RR L"                  , &rotate_right!(l)),
         dop!("RR (HL)"               , &CPU::unimplemented),
-        dop!("RR A"                  , &CPU::unimplemented),
+        dop!("RR A"                  , &rotate_right!(a)),
 
         dop!("SLA B"                 , &CPU::unimplemented),
         dop!("SLA C"                 , &CPU::unimplemented),
@@ -385,226 +379,226 @@ impl CPU {
         dop!("SRA (HL)"              , &CPU::unimplemented),
         dop!("SRA A"                 , &CPU::unimplemented),
 
-        dop!("SWAP B"                , &CPU::unimplemented),
-        dop!("SWAP C"                , &CPU::unimplemented),
-        dop!("SWAP D"                , &CPU::unimplemented),
-        dop!("SWAP E"                , &CPU::unimplemented),
-        dop!("SWAP H"                , &CPU::unimplemented),
-        dop!("SWAP L"                , &CPU::unimplemented),
+        dop!("SWAP B"                , &swap!(b)),
+        dop!("SWAP C"                , &swap!(c)),
+        dop!("SWAP D"                , &swap!(d)),
+        dop!("SWAP E"                , &swap!(e)),
+        dop!("SWAP H"                , &swap!(h)),
+        dop!("SWAP L"                , &swap!(l)),
         dop!("SWAP (HL)"             , &CPU::unimplemented),
-        dop!("SWAP A"                , &CPU::unimplemented),
-        dop!("SRL B"                 , &CPU::unimplemented),
-        dop!("SRL C"                 , &CPU::unimplemented),
-        dop!("SRL D"                 , &CPU::unimplemented),
-        dop!("SRL E"                 , &CPU::unimplemented),
-        dop!("SRL H"                 , &CPU::unimplemented),
-        dop!("SRL L"                 , &CPU::unimplemented),
+        dop!("SWAP A"                , &swap!(a)),
+        dop!("SRL B"                 , &shift_right_logical!(b)),
+        dop!("SRL C"                 , &shift_right_logical!(c)),
+        dop!("SRL D"                 , &shift_right_logical!(d)),
+        dop!("SRL E"                 , &shift_right_logical!(e)),
+        dop!("SRL H"                 , &shift_right_logical!(h)),
+        dop!("SRL L"                 , &shift_right_logical!(l)),
         dop!("SRL (HL)"              , &CPU::unimplemented),
-        dop!("SRL A"                 , &CPU::unimplemented),
+        dop!("SRL A"                 , &shift_right_logical!(a)),
 
-        dop!("BIT 0,B"                 , &CPU::unimplemented),
-        dop!("BIT 0,C"                 , &CPU::unimplemented),
-        dop!("BIT 0,D"                 , &CPU::unimplemented),
-        dop!("BIT 0,E"                 , &CPU::unimplemented),
-        dop!("BIT 0,H"                 , &CPU::unimplemented),
-        dop!("BIT 0,L"                 , &CPU::unimplemented),
-        dop!("BIT 0,(HL)"              , &CPU::unimplemented),
-        dop!("BIT 0,A"                 , &CPU::unimplemented),
-        dop!("BIT 1,B"                 , &CPU::unimplemented),
-        dop!("BIT 1,C"                 , &CPU::unimplemented),
-        dop!("BIT 1,D"                 , &CPU::unimplemented),
-        dop!("BIT 1,E"                 , &CPU::unimplemented),
-        dop!("BIT 1,H"                 , &CPU::unimplemented),
-        dop!("BIT 1,L"                 , &CPU::unimplemented),
-        dop!("BIT 1,(HL)"              , &CPU::unimplemented),
-        dop!("BIT 1,A"                 , &CPU::unimplemented),
+        dop!("BIT 0,B"               , &CPU::unimplemented),
+        dop!("BIT 0,C"               , &CPU::unimplemented),
+        dop!("BIT 0,D"               , &CPU::unimplemented),
+        dop!("BIT 0,E"               , &CPU::unimplemented),
+        dop!("BIT 0,H"               , &CPU::unimplemented),
+        dop!("BIT 0,L"               , &CPU::unimplemented),
+        dop!("BIT 0,(HL)"            , &CPU::unimplemented),
+        dop!("BIT 0,A"               , &CPU::unimplemented),
+        dop!("BIT 1,B"               , &CPU::unimplemented),
+        dop!("BIT 1,C"               , &CPU::unimplemented),
+        dop!("BIT 1,D"               , &CPU::unimplemented),
+        dop!("BIT 1,E"               , &CPU::unimplemented),
+        dop!("BIT 1,H"               , &CPU::unimplemented),
+        dop!("BIT 1,L"               , &CPU::unimplemented),
+        dop!("BIT 1,(HL)"            , &CPU::unimplemented),
+        dop!("BIT 1,A"               , &CPU::unimplemented),
 
-        dop!("BIT 2,B"                 , &CPU::unimplemented),
-        dop!("BIT 2,C"                 , &CPU::unimplemented),
-        dop!("BIT 2,D"                 , &CPU::unimplemented),
-        dop!("BIT 2,E"                 , &CPU::unimplemented),
-        dop!("BIT 2,H"                 , &CPU::unimplemented),
-        dop!("BIT 2,L"                 , &CPU::unimplemented),
-        dop!("BIT 2,(HL)"              , &CPU::unimplemented),
-        dop!("BIT 2,A"                 , &CPU::unimplemented),
-        dop!("BIT 3,B"                 , &CPU::unimplemented),
-        dop!("BIT 3,C"                 , &CPU::unimplemented),
-        dop!("BIT 3,D"                 , &CPU::unimplemented),
-        dop!("BIT 3,E"                 , &CPU::unimplemented),
-        dop!("BIT 3,H"                 , &CPU::unimplemented),
-        dop!("BIT 3,L"                 , &CPU::unimplemented),
-        dop!("BIT 3,(HL)"              , &CPU::unimplemented),
-        dop!("BIT 3,A"                 , &CPU::unimplemented),
+        dop!("BIT 2,B"               , &CPU::unimplemented),
+        dop!("BIT 2,C"               , &CPU::unimplemented),
+        dop!("BIT 2,D"               , &CPU::unimplemented),
+        dop!("BIT 2,E"               , &CPU::unimplemented),
+        dop!("BIT 2,H"               , &CPU::unimplemented),
+        dop!("BIT 2,L"               , &CPU::unimplemented),
+        dop!("BIT 2,(HL)"            , &CPU::unimplemented),
+        dop!("BIT 2,A"               , &CPU::unimplemented),
+        dop!("BIT 3,B"               , &CPU::unimplemented),
+        dop!("BIT 3,C"               , &CPU::unimplemented),
+        dop!("BIT 3,D"               , &CPU::unimplemented),
+        dop!("BIT 3,E"               , &CPU::unimplemented),
+        dop!("BIT 3,H"               , &CPU::unimplemented),
+        dop!("BIT 3,L"               , &CPU::unimplemented),
+        dop!("BIT 3,(HL)"            , &CPU::unimplemented),
+        dop!("BIT 3,A"               , &CPU::unimplemented),
 
-        dop!("BIT 4,B"                 , &CPU::unimplemented),
-        dop!("BIT 4,C"                 , &CPU::unimplemented),
-        dop!("BIT 4,D"                 , &CPU::unimplemented),
-        dop!("BIT 4,E"                 , &CPU::unimplemented),
-        dop!("BIT 4,H"                 , &CPU::unimplemented),
-        dop!("BIT 4,L"                 , &CPU::unimplemented),
-        dop!("BIT 4,(HL)"              , &CPU::unimplemented),
-        dop!("BIT 4,A"                 , &CPU::unimplemented),
-        dop!("BIT 5,B"                 , &CPU::unimplemented),
-        dop!("BIT 5,C"                 , &CPU::unimplemented),
-        dop!("BIT 5,D"                 , &CPU::unimplemented),
-        dop!("BIT 5,E"                 , &CPU::unimplemented),
-        dop!("BIT 5,H"                 , &CPU::unimplemented),
-        dop!("BIT 5,L"                 , &CPU::unimplemented),
-        dop!("BIT 5,(HL)"              , &CPU::unimplemented),
-        dop!("BIT 5,A"                 , &CPU::unimplemented),
+        dop!("BIT 4,B"               , &CPU::unimplemented),
+        dop!("BIT 4,C"               , &CPU::unimplemented),
+        dop!("BIT 4,D"               , &CPU::unimplemented),
+        dop!("BIT 4,E"               , &CPU::unimplemented),
+        dop!("BIT 4,H"               , &CPU::unimplemented),
+        dop!("BIT 4,L"               , &CPU::unimplemented),
+        dop!("BIT 4,(HL)"            , &CPU::unimplemented),
+        dop!("BIT 4,A"               , &CPU::unimplemented),
+        dop!("BIT 5,B"               , &CPU::unimplemented),
+        dop!("BIT 5,C"               , &CPU::unimplemented),
+        dop!("BIT 5,D"               , &CPU::unimplemented),
+        dop!("BIT 5,E"               , &CPU::unimplemented),
+        dop!("BIT 5,H"               , &CPU::unimplemented),
+        dop!("BIT 5,L"               , &CPU::unimplemented),
+        dop!("BIT 5,(HL)"            , &CPU::unimplemented),
+        dop!("BIT 5,A"               , &CPU::unimplemented),
 
-        dop!("BIT 6,B"                 , &CPU::unimplemented),
-        dop!("BIT 6,C"                 , &CPU::unimplemented),
-        dop!("BIT 6,D"                 , &CPU::unimplemented),
-        dop!("BIT 6,E"                 , &CPU::unimplemented),
-        dop!("BIT 6,H"                 , &CPU::unimplemented),
-        dop!("BIT 6,L"                 , &CPU::unimplemented),
-        dop!("BIT 6,(HL)"              , &CPU::unimplemented),
-        dop!("BIT 6,A"                 , &CPU::unimplemented),
-        dop!("BIT 7,B"                 , &CPU::unimplemented),
-        dop!("BIT 7,C"                 , &CPU::unimplemented),
-        dop!("BIT 7,D"                 , &CPU::unimplemented),
-        dop!("BIT 7,E"                 , &CPU::unimplemented),
-        dop!("BIT 7,H"                 , &CPU::unimplemented),
-        dop!("BIT 7,L"                 , &CPU::unimplemented),
-        dop!("BIT 7,(HL)"              , &CPU::unimplemented),
-        dop!("BIT 7,A"                 , &CPU::unimplemented),
+        dop!("BIT 6,B"               , &CPU::unimplemented),
+        dop!("BIT 6,C"               , &CPU::unimplemented),
+        dop!("BIT 6,D"               , &CPU::unimplemented),
+        dop!("BIT 6,E"               , &CPU::unimplemented),
+        dop!("BIT 6,H"               , &CPU::unimplemented),
+        dop!("BIT 6,L"               , &CPU::unimplemented),
+        dop!("BIT 6,(HL)"            , &CPU::unimplemented),
+        dop!("BIT 6,A"               , &CPU::unimplemented),
+        dop!("BIT 7,B"               , &CPU::unimplemented),
+        dop!("BIT 7,C"               , &CPU::unimplemented),
+        dop!("BIT 7,D"               , &CPU::unimplemented),
+        dop!("BIT 7,E"               , &CPU::unimplemented),
+        dop!("BIT 7,H"               , &CPU::unimplemented),
+        dop!("BIT 7,L"               , &CPU::unimplemented),
+        dop!("BIT 7,(HL)"            , &CPU::unimplemented),
+        dop!("BIT 7,A"               , &CPU::unimplemented),
 
-        dop!("RES 0,B"                 , &CPU::unimplemented),
-        dop!("RES 0,C"                 , &CPU::unimplemented),
-        dop!("RES 0,D"                 , &CPU::unimplemented),
-        dop!("RES 0,E"                 , &CPU::unimplemented),
-        dop!("RES 0,H"                 , &CPU::unimplemented),
-        dop!("RES 0,L"                 , &CPU::unimplemented),
-        dop!("RES 0,(HL)"              , &CPU::unimplemented),
-        dop!("RES 0,A"                 , &CPU::unimplemented),
-        dop!("RES 1,B"                 , &CPU::unimplemented),
-        dop!("RES 1,C"                 , &CPU::unimplemented),
-        dop!("RES 1,D"                 , &CPU::unimplemented),
-        dop!("RES 1,E"                 , &CPU::unimplemented),
-        dop!("RES 1,H"                 , &CPU::unimplemented),
-        dop!("RES 1,L"                 , &CPU::unimplemented),
-        dop!("RES 1,(HL)"              , &CPU::unimplemented),
-        dop!("RES 1,A"                 , &CPU::unimplemented),
+        dop!("RES 0,B"               , &CPU::unimplemented),
+        dop!("RES 0,C"               , &CPU::unimplemented),
+        dop!("RES 0,D"               , &CPU::unimplemented),
+        dop!("RES 0,E"               , &CPU::unimplemented),
+        dop!("RES 0,H"               , &CPU::unimplemented),
+        dop!("RES 0,L"               , &CPU::unimplemented),
+        dop!("RES 0,(HL)"            , &CPU::unimplemented),
+        dop!("RES 0,A"               , &CPU::unimplemented),
+        dop!("RES 1,B"               , &CPU::unimplemented),
+        dop!("RES 1,C"               , &CPU::unimplemented),
+        dop!("RES 1,D"               , &CPU::unimplemented),
+        dop!("RES 1,E"               , &CPU::unimplemented),
+        dop!("RES 1,H"               , &CPU::unimplemented),
+        dop!("RES 1,L"               , &CPU::unimplemented),
+        dop!("RES 1,(HL)"            , &CPU::unimplemented),
+        dop!("RES 1,A"               , &CPU::unimplemented),
 
-        dop!("RES 2,B"                 , &CPU::unimplemented),
-        dop!("RES 2,C"                 , &CPU::unimplemented),
-        dop!("RES 2,D"                 , &CPU::unimplemented),
-        dop!("RES 2,E"                 , &CPU::unimplemented),
-        dop!("RES 2,H"                 , &CPU::unimplemented),
-        dop!("RES 2,L"                 , &CPU::unimplemented),
-        dop!("RES 2,(HL)"              , &CPU::unimplemented),
-        dop!("RES 2,A"                 , &CPU::unimplemented),
-        dop!("RES 3,B"                 , &CPU::unimplemented),
-        dop!("RES 3,C"                 , &CPU::unimplemented),
-        dop!("RES 3,D"                 , &CPU::unimplemented),
-        dop!("RES 3,E"                 , &CPU::unimplemented),
-        dop!("RES 3,H"                 , &CPU::unimplemented),
-        dop!("RES 3,L"                 , &CPU::unimplemented),
-        dop!("RES 3,(HL)"              , &CPU::unimplemented),
-        dop!("RES 3,A"                 , &CPU::unimplemented),
+        dop!("RES 2,B"               , &CPU::unimplemented),
+        dop!("RES 2,C"               , &CPU::unimplemented),
+        dop!("RES 2,D"               , &CPU::unimplemented),
+        dop!("RES 2,E"               , &CPU::unimplemented),
+        dop!("RES 2,H"               , &CPU::unimplemented),
+        dop!("RES 2,L"               , &CPU::unimplemented),
+        dop!("RES 2,(HL)"            , &CPU::unimplemented),
+        dop!("RES 2,A"               , &CPU::unimplemented),
+        dop!("RES 3,B"               , &CPU::unimplemented),
+        dop!("RES 3,C"               , &CPU::unimplemented),
+        dop!("RES 3,D"               , &CPU::unimplemented),
+        dop!("RES 3,E"               , &CPU::unimplemented),
+        dop!("RES 3,H"               , &CPU::unimplemented),
+        dop!("RES 3,L"               , &CPU::unimplemented),
+        dop!("RES 3,(HL)"            , &CPU::unimplemented),
+        dop!("RES 3,A"               , &CPU::unimplemented),
 
-        dop!("RES 4,B"                 , &CPU::unimplemented),
-        dop!("RES 4,C"                 , &CPU::unimplemented),
-        dop!("RES 4,D"                 , &CPU::unimplemented),
-        dop!("RES 4,E"                 , &CPU::unimplemented),
-        dop!("RES 4,H"                 , &CPU::unimplemented),
-        dop!("RES 4,L"                 , &CPU::unimplemented),
-        dop!("RES 4,(HL)"              , &CPU::unimplemented),
-        dop!("RES 4,A"                 , &CPU::unimplemented),
-        dop!("RES 5,B"                 , &CPU::unimplemented),
-        dop!("RES 5,C"                 , &CPU::unimplemented),
-        dop!("RES 5,D"                 , &CPU::unimplemented),
-        dop!("RES 5,E"                 , &CPU::unimplemented),
-        dop!("RES 5,H"                 , &CPU::unimplemented),
-        dop!("RES 5,L"                 , &CPU::unimplemented),
-        dop!("RES 5,(HL)"              , &CPU::unimplemented),
-        dop!("RES 5,A"                 , &CPU::unimplemented),
+        dop!("RES 4,B"               , &CPU::unimplemented),
+        dop!("RES 4,C"               , &CPU::unimplemented),
+        dop!("RES 4,D"               , &CPU::unimplemented),
+        dop!("RES 4,E"               , &CPU::unimplemented),
+        dop!("RES 4,H"               , &CPU::unimplemented),
+        dop!("RES 4,L"               , &CPU::unimplemented),
+        dop!("RES 4,(HL)"            , &CPU::unimplemented),
+        dop!("RES 4,A"               , &CPU::unimplemented),
+        dop!("RES 5,B"               , &CPU::unimplemented),
+        dop!("RES 5,C"               , &CPU::unimplemented),
+        dop!("RES 5,D"               , &CPU::unimplemented),
+        dop!("RES 5,E"               , &CPU::unimplemented),
+        dop!("RES 5,H"               , &CPU::unimplemented),
+        dop!("RES 5,L"               , &CPU::unimplemented),
+        dop!("RES 5,(HL)"            , &CPU::unimplemented),
+        dop!("RES 5,A"               , &CPU::unimplemented),
 
-        dop!("RES 6,B"                 , &CPU::unimplemented),
-        dop!("RES 6,C"                 , &CPU::unimplemented),
-        dop!("RES 6,D"                 , &CPU::unimplemented),
-        dop!("RES 6,E"                 , &CPU::unimplemented),
-        dop!("RES 6,H"                 , &CPU::unimplemented),
-        dop!("RES 6,L"                 , &CPU::unimplemented),
-        dop!("RES 6,(HL)"              , &CPU::unimplemented),
-        dop!("RES 6,A"                 , &CPU::unimplemented),
-        dop!("RES 7,B"                 , &CPU::unimplemented),
-        dop!("RES 7,C"                 , &CPU::unimplemented),
-        dop!("RES 7,D"                 , &CPU::unimplemented),
-        dop!("RES 7,E"                 , &CPU::unimplemented),
-        dop!("RES 7,H"                 , &CPU::unimplemented),
-        dop!("RES 7,L"                 , &CPU::unimplemented),
-        dop!("RES 7,(HL)"              , &CPU::unimplemented),
-        dop!("RES 7,A"                 , &CPU::unimplemented),
+        dop!("RES 6,B"               , &CPU::unimplemented),
+        dop!("RES 6,C"               , &CPU::unimplemented),
+        dop!("RES 6,D"               , &CPU::unimplemented),
+        dop!("RES 6,E"               , &CPU::unimplemented),
+        dop!("RES 6,H"               , &CPU::unimplemented),
+        dop!("RES 6,L"               , &CPU::unimplemented),
+        dop!("RES 6,(HL)"            , &CPU::unimplemented),
+        dop!("RES 6,A"               , &CPU::unimplemented),
+        dop!("RES 7,B"               , &CPU::unimplemented),
+        dop!("RES 7,C"               , &CPU::unimplemented),
+        dop!("RES 7,D"               , &CPU::unimplemented),
+        dop!("RES 7,E"               , &CPU::unimplemented),
+        dop!("RES 7,H"               , &CPU::unimplemented),
+        dop!("RES 7,L"               , &CPU::unimplemented),
+        dop!("RES 7,(HL)"            , &CPU::unimplemented),
+        dop!("RES 7,A"               , &CPU::unimplemented),
 
-        dop!("SET 0,B"                 , &CPU::unimplemented),
-        dop!("SET 0,C"                 , &CPU::unimplemented),
-        dop!("SET 0,D"                 , &CPU::unimplemented),
-        dop!("SET 0,E"                 , &CPU::unimplemented),
-        dop!("SET 0,H"                 , &CPU::unimplemented),
-        dop!("SET 0,L"                 , &CPU::unimplemented),
-        dop!("SET 0,(HL)"              , &CPU::unimplemented),
-        dop!("SET 0,A"                 , &CPU::unimplemented),
-        dop!("SET 1,B"                 , &CPU::unimplemented),
-        dop!("SET 1,C"                 , &CPU::unimplemented),
-        dop!("SET 1,D"                 , &CPU::unimplemented),
-        dop!("SET 1,E"                 , &CPU::unimplemented),
-        dop!("SET 1,H"                 , &CPU::unimplemented),
-        dop!("SET 1,L"                 , &CPU::unimplemented),
-        dop!("SET 1,(HL)"              , &CPU::unimplemented),
-        dop!("SET 1,A"                 , &CPU::unimplemented),
+        dop!("SET 0,B"               , &CPU::unimplemented),
+        dop!("SET 0,C"               , &CPU::unimplemented),
+        dop!("SET 0,D"               , &CPU::unimplemented),
+        dop!("SET 0,E"               , &CPU::unimplemented),
+        dop!("SET 0,H"               , &CPU::unimplemented),
+        dop!("SET 0,L"               , &CPU::unimplemented),
+        dop!("SET 0,(HL)"            , &CPU::unimplemented),
+        dop!("SET 0,A"               , &CPU::unimplemented),
+        dop!("SET 1,B"               , &CPU::unimplemented),
+        dop!("SET 1,C"               , &CPU::unimplemented),
+        dop!("SET 1,D"               , &CPU::unimplemented),
+        dop!("SET 1,E"               , &CPU::unimplemented),
+        dop!("SET 1,H"               , &CPU::unimplemented),
+        dop!("SET 1,L"               , &CPU::unimplemented),
+        dop!("SET 1,(HL)"            , &CPU::unimplemented),
+        dop!("SET 1,A"               , &CPU::unimplemented),
 
-        dop!("SET 2,B"                 , &CPU::unimplemented),
-        dop!("SET 2,C"                 , &CPU::unimplemented),
-        dop!("SET 2,D"                 , &CPU::unimplemented),
-        dop!("SET 2,E"                 , &CPU::unimplemented),
-        dop!("SET 2,H"                 , &CPU::unimplemented),
-        dop!("SET 2,L"                 , &CPU::unimplemented),
-        dop!("SET 2,(HL)"              , &CPU::unimplemented),
-        dop!("SET 2,A"                 , &CPU::unimplemented),
-        dop!("SET 3,B"                 , &CPU::unimplemented),
-        dop!("SET 3,C"                 , &CPU::unimplemented),
-        dop!("SET 3,D"                 , &CPU::unimplemented),
-        dop!("SET 3,E"                 , &CPU::unimplemented),
-        dop!("SET 3,H"                 , &CPU::unimplemented),
-        dop!("SET 3,L"                 , &CPU::unimplemented),
-        dop!("SET 3,(HL)"              , &CPU::unimplemented),
-        dop!("SET 3,A"                 , &CPU::unimplemented),
+        dop!("SET 2,B"               , &CPU::unimplemented),
+        dop!("SET 2,C"               , &CPU::unimplemented),
+        dop!("SET 2,D"               , &CPU::unimplemented),
+        dop!("SET 2,E"               , &CPU::unimplemented),
+        dop!("SET 2,H"               , &CPU::unimplemented),
+        dop!("SET 2,L"               , &CPU::unimplemented),
+        dop!("SET 2,(HL)"            , &CPU::unimplemented),
+        dop!("SET 2,A"               , &CPU::unimplemented),
+        dop!("SET 3,B"               , &CPU::unimplemented),
+        dop!("SET 3,C"               , &CPU::unimplemented),
+        dop!("SET 3,D"               , &CPU::unimplemented),
+        dop!("SET 3,E"               , &CPU::unimplemented),
+        dop!("SET 3,H"               , &CPU::unimplemented),
+        dop!("SET 3,L"               , &CPU::unimplemented),
+        dop!("SET 3,(HL)"            , &CPU::unimplemented),
+        dop!("SET 3,A"               , &CPU::unimplemented),
 
-        dop!("SET 4,B"                 , &CPU::unimplemented),
-        dop!("SET 4,C"                 , &CPU::unimplemented),
-        dop!("SET 4,D"                 , &CPU::unimplemented),
-        dop!("SET 4,E"                 , &CPU::unimplemented),
-        dop!("SET 4,H"                 , &CPU::unimplemented),
-        dop!("SET 4,L"                 , &CPU::unimplemented),
-        dop!("SET 4,(HL)"              , &CPU::unimplemented),
-        dop!("SET 4,A"                 , &CPU::unimplemented),
-        dop!("SET 5,B"                 , &CPU::unimplemented),
-        dop!("SET 5,C"                 , &CPU::unimplemented),
-        dop!("SET 5,D"                 , &CPU::unimplemented),
-        dop!("SET 5,E"                 , &CPU::unimplemented),
-        dop!("SET 5,H"                 , &CPU::unimplemented),
-        dop!("SET 5,L"                 , &CPU::unimplemented),
-        dop!("SET 5,(HL)"              , &CPU::unimplemented),
-        dop!("SET 5,A"                 , &CPU::unimplemented),
+        dop!("SET 4,B"               , &CPU::unimplemented),
+        dop!("SET 4,C"               , &CPU::unimplemented),
+        dop!("SET 4,D"               , &CPU::unimplemented),
+        dop!("SET 4,E"               , &CPU::unimplemented),
+        dop!("SET 4,H"               , &CPU::unimplemented),
+        dop!("SET 4,L"               , &CPU::unimplemented),
+        dop!("SET 4,(HL)"            , &CPU::unimplemented),
+        dop!("SET 4,A"               , &CPU::unimplemented),
+        dop!("SET 5,B"               , &CPU::unimplemented),
+        dop!("SET 5,C"               , &CPU::unimplemented),
+        dop!("SET 5,D"               , &CPU::unimplemented),
+        dop!("SET 5,E"               , &CPU::unimplemented),
+        dop!("SET 5,H"               , &CPU::unimplemented),
+        dop!("SET 5,L"               , &CPU::unimplemented),
+        dop!("SET 5,(HL)"            , &CPU::unimplemented),
+        dop!("SET 5,A"               , &CPU::unimplemented),
 
-        dop!("SET 6,B"                 , &CPU::unimplemented),
-        dop!("SET 6,C"                 , &CPU::unimplemented),
-        dop!("SET 6,D"                 , &CPU::unimplemented),
-        dop!("SET 6,E"                 , &CPU::unimplemented),
-        dop!("SET 6,H"                 , &CPU::unimplemented),
-        dop!("SET 6,L"                 , &CPU::unimplemented),
-        dop!("SET 6,(HL)"              , &CPU::unimplemented),
-        dop!("SET 6,A"                 , &CPU::unimplemented),
-        dop!("SET 7,B"                 , &CPU::unimplemented),
-        dop!("SET 7,C"                 , &CPU::unimplemented),
-        dop!("SET 7,D"                 , &CPU::unimplemented),
-        dop!("SET 7,E"                 , &CPU::unimplemented),
-        dop!("SET 7,H"                 , &CPU::unimplemented),
-        dop!("SET 7,L"                 , &CPU::unimplemented),
-        dop!("SET 7,(HL)"              , &CPU::unimplemented),
-        dop!("SET 7,A"                 , &CPU::unimplemented),
+        dop!("SET 6,B"               , &CPU::unimplemented),
+        dop!("SET 6,C"               , &CPU::unimplemented),
+        dop!("SET 6,D"               , &CPU::unimplemented),
+        dop!("SET 6,E"               , &CPU::unimplemented),
+        dop!("SET 6,H"               , &CPU::unimplemented),
+        dop!("SET 6,L"               , &CPU::unimplemented),
+        dop!("SET 6,(HL)"            , &CPU::unimplemented),
+        dop!("SET 6,A"               , &CPU::unimplemented),
+        dop!("SET 7,B"               , &CPU::unimplemented),
+        dop!("SET 7,C"               , &CPU::unimplemented),
+        dop!("SET 7,D"               , &CPU::unimplemented),
+        dop!("SET 7,E"               , &CPU::unimplemented),
+        dop!("SET 7,H"               , &CPU::unimplemented),
+        dop!("SET 7,L"               , &CPU::unimplemented),
+        dop!("SET 7,(HL)"            , &CPU::unimplemented),
+        dop!("SET 7,A"               , &CPU::unimplemented),
     ];
 
     pub fn new(rom_data: &[u8]) -> CPU {
@@ -624,9 +618,6 @@ impl CPU {
         let op = &CPU::OPS[op_code as usize];
         let op_impl = op.execute;
 
-        // let time = time::Duration::from_millis(100);
-        // thread::sleep(time);
-
         let ticks = op_impl(self);
 
         println!("af: {:#06X}, bc: {:#06X}, de: {:#06X}, hl: {:#06X}, sp: {:#06X}, pc: {:#06X}",
@@ -637,6 +628,10 @@ impl CPU {
             self.regs.sp,
             self.regs.pc
         );
+
+        if self.regs.pc > 0xD700  {
+            panic!("FUCK");
+        }
 
         return ticks;
     }
@@ -684,6 +679,11 @@ impl CPU {
        1 
     }
 
+    fn halt(&mut self) -> usize {
+       println!("HALT not implemented");
+       1 
+    }
+
     fn nonexistant(&mut self) -> usize {
         unimplemented!("this op doesn't exist on gb hardware")
     }
@@ -692,13 +692,9 @@ impl CPU {
         unimplemented!("op is unimplemented")
     }
 
-    fn unimplemented_8(&mut self, _value: u8) -> usize {
-        unimplemented!("op is unimplemented")
-    }
-
     // DEBUG
 
     pub fn print_reg_state(&self) {
-        println!("Hello, world! {:?}", self.regs);
+        println!("Hello, worload! {:?}", self.regs);
     }
 }

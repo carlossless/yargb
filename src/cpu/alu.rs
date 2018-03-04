@@ -174,6 +174,16 @@ impl CPU {
         self.regs.set_hl(hl);
     }
 
+    pub fn alu_add_to_sp(&mut self, value: i8) -> u16 {
+        let delta = value as i16 as u16;
+        let sp = self.regs.sp;
+        self.regs.set_flag(Z, false);
+        self.regs.set_flag(N, false);
+        self.regs.set_flag(H, (sp & 0x000F) + (delta & 0x000F) > 0x000F);
+        self.regs.set_flag(C, (sp & 0x00FF) + (delta & 0x00FF) > 0x00FF);
+        sp.wrapping_add(delta)
+    }
+
     pub fn alu_add_word(&mut self, lhs: u16, rhs: u16) -> u16 {
         let result = lhs.wrapping_add(rhs);
         self.regs.set_flag(N, false);

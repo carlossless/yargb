@@ -43,6 +43,8 @@ impl MMU {
             0x8000 ... 0x9FFF => self.gpu.read_byte(addr - 0x8000),
             0xC000 ... 0xDFFF => self.work_ram[(addr - 0xC000) as usize],
             0xFF04 ... 0xFF07 => self.timer_stub[(addr - 0xFF04) as usize],
+            0xFF01 => { println!("serial_data"); 0x00 }
+            0xFF02 => { println!("serial_clock"); 0x00 }
             0xFF0F => self.interupt_flags,
             0xFF24 => self.channel_control,
             0xFF25 => self.sound_output,
@@ -63,9 +65,12 @@ impl MMU {
 
     pub fn write_byte(&mut self, addr: u16, value: u8) {
         match addr {
-            0x8000 ... 0x9FFF => { self.gpu.write_byte(addr - 0x8000, value); },
-            0xC000 ... 0xDFFF => { self.work_ram[(addr - 0xC000) as usize] = value; },
-            0xFF04 ... 0xFF07 => { self.timer_stub[(addr - 0xFF04) as usize] = value; },
+            0x0000 ... 0x7FFF => self.mbc.write_rom(addr, value),
+            0x8000 ... 0x9FFF => self.gpu.write_byte(addr - 0x8000, value),
+            0xC000 ... 0xDFFF => self.work_ram[(addr - 0xC000) as usize] = value,
+            0xFF04 ... 0xFF07 => self.timer_stub[(addr - 0xFF04) as usize] = value,
+            0xFF01 => println!("serial_data {:#2X}", value),
+            0xFF02 => println!("serial_clock {:#2X}", value),
             0xFF0F => { self.interupt_flags = value; println!("interupt_flags {:b}", value); }
             0xFF24 => { self.channel_control = value; println!("channel_control {:b}", value); }
             0xFF25 => { self.sound_output = value; println!("sound_output {:b}", value); }

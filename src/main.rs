@@ -41,18 +41,18 @@ fn main() {
     while running {
         cpu.cycle();
 
-        events_loop.poll_events(|event| {
-            match event {
-                glutin::Event::WindowEvent{ event, .. } => match event {
-                    glutin::WindowEvent::Closed => running = false,
-                    glutin::WindowEvent::Resized(w, h) => gl_window.resize(w, h),
-                    _ => ()
-                },
-                _ => ()
-            }
-        });
+        // events_loop.poll_events(|event| {
+        //     match event {
+        //         glutin::Event::WindowEvent{ event, .. } => match event {
+        //             glutin::WindowEvent::Closed => running = false,
+        //             glutin::WindowEvent::Resized(w, h) => gl_window.resize(w, h),
+        //             _ => ()
+        //         },
+        //         _ => ()
+        //     }
+        // });
 
-        gl_window.swap_buffers().unwrap();
+        // gl_window.swap_buffers().unwrap();
     }
 
     cpu.print_reg_state();

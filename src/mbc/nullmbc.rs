@@ -14,4 +14,5 @@ impl NULLMBC {
 
 impl MBC for NULLMBC {
     fn read_rom(&self, addr: u16) -> u8 { self.rom[addr as usize] }
+    fn write_rom(&self, addr: u16, value: u8) { println!("Writting Rom??? {:#06X} {:#04X}", addr, value); }
 }
