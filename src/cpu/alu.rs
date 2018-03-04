@@ -50,10 +50,10 @@ macro_rules! alu_dec_word {
 macro_rules! alu_add {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
-            let addend = cpu.regs.$source_register;
-            let mut v = cpu.regs.$target_register;
-            v = cpu.alu_add_byte(v, addend);
-            cpu.regs.$target_register = v;
+            let addend = cpu.regs.$target_register;
+            let v = cpu.regs.$source_register;
+            let r = cpu.alu_add_byte(v, addend);
+            cpu.regs.$source_register = r;
             1
         }
     )
@@ -62,10 +62,10 @@ macro_rules! alu_add {
 macro_rules! alu_adc {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
-            let addend = cpu.regs.$source_register;
-            let mut v = cpu.regs.$target_register;
-            v = cpu.alu_add_byte_with_carry(v, addend);
-            cpu.regs.$target_register = v;
+            let addend = cpu.regs.$target_register;
+            let v = cpu.regs.$source_register;
+            let r = cpu.alu_add_byte_with_carry(v, addend);
+            cpu.regs.$source_register = r;
             1
         }
     )
@@ -74,10 +74,10 @@ macro_rules! alu_adc {
 macro_rules! alu_sub {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
-            let addend = cpu.regs.$source_register;
-            let mut v = cpu.regs.$target_register;
-            v = cpu.alu_sub_byte(v, addend);
-            cpu.regs.$target_register = v;
+            let addend = cpu.regs.$target_register;
+            let v = cpu.regs.$source_register;
+            let r = cpu.alu_sub_byte(v, addend);
+            cpu.regs.$source_register = r;
             1
         }
     )
@@ -86,10 +86,10 @@ macro_rules! alu_sub {
 macro_rules! alu_sbc {
     ($source_register:ident, $target_register:ident) => (
         |cpu: &mut CPU| {
-            let addend = cpu.regs.$source_register;
-            let mut v = cpu.regs.$target_register;
-            v = cpu.alu_sub_byte_with_carry(v, addend);
-            cpu.regs.$target_register = v;
+            let addend = cpu.regs.$target_register;
+            let v = cpu.regs.$source_register;
+            let r = cpu.alu_sub_byte_with_carry(v, addend);
+            cpu.regs.$source_register = r;
             1
         }
     )
@@ -101,7 +101,7 @@ macro_rules! alu_and {
             let x = cpu.regs.$source_register;
             let y = cpu.regs.$target_register;
             let r = cpu.alu_and(x, y);
-            cpu.regs.$target_register = r;
+            cpu.regs.$source_register = r;
             1
         }
     )
@@ -113,7 +113,7 @@ macro_rules! alu_xor {
             let x = cpu.regs.$source_register;
             let y = cpu.regs.$target_register;
             let r = cpu.alu_xor(x, y);
-            cpu.regs.$target_register = r;
+            cpu.regs.$source_register = r;
             1
         }
     )
@@ -125,7 +125,7 @@ macro_rules! alu_or {
             let x = cpu.regs.$source_register;
             let y = cpu.regs.$target_register;
             let r = cpu.alu_or(x, y);
-            cpu.regs.$target_register = r;
+            cpu.regs.$source_register = r;
             1
         }
     )
@@ -249,7 +249,7 @@ impl CPU {
     }
 
     pub fn alu_or(&mut self, lhs: u8, rhs: u8) -> u8 {
-        let result = lhs ^ rhs;
+        let result = lhs | rhs;
         self.regs.set_flag(Z, result == 0);
         self.regs.set_flag(N, false);
         self.regs.set_flag(H, false);

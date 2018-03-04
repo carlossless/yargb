@@ -25,28 +25,28 @@ struct Operation {
 macro_rules! dop {
     ($name:tt, $execute:expr) => (Operation {
         execute: &|cpu| {
-            print!($name);
+            // print!($name);
             $execute(cpu)
         }
     });
     ($name:tt, u8, $execute:expr) => (Operation {
         execute: &|cpu: &mut CPU| {
             let value: u8 = cpu.fetch_byte();
-            print!($name, value);
+            // print!($name, value);
             $execute(cpu, value)
         }
     });
     ($name:tt, i8, $execute:expr) => (Operation {
         execute: &|cpu: &mut CPU| {
             let value = cpu.fetch_byte() as i8;
-            print!($name, FormatAsSigned(value));
+            // print!($name, FormatAsSigned(value));
             $execute(cpu, value)
         }
     });
     ($name:tt, u16, $execute:expr) => (Operation {
         execute: &|cpu: &mut CPU| {
             let value: u16 = cpu.fetch_word();
-            print!($name, value);
+            // print!($name, value);
             $execute(cpu, value)
         }
     });
@@ -614,13 +614,8 @@ impl CPU {
     }
 
     fn process(&mut self) -> usize {
-        let op_code = self.fetch_byte();
-        let op = &CPU::OPS[op_code as usize];
-        let op_impl = op.execute;
-
-        let ticks = op_impl(self);
-
-        println!(" --> af: {:#06X}, bc: {:#06X}, de: {:#06X}, hl: {:#06X}, sp: {:#06X}, pc: {:#06X}",
+        let pc = self.regs.pc;
+        println!("af: {:#06X}, bc: {:#06X}, de: {:#06X}, hl: {:#06X}, sp: {:#06X}, pc: {:#06X}",
             self.regs.get_af(),
             self.regs.get_bc(),
             self.regs.get_de(),
@@ -628,6 +623,16 @@ impl CPU {
             self.regs.sp,
             self.regs.pc
         );
+
+        let op_code = self.fetch_byte();
+        let op = &CPU::OPS[op_code as usize];
+        let op_impl = op.execute;
+
+        let ticks = op_impl(self);
+
+        // if 0x0741 == pc {
+        //     panic!("Gotchya!");
+        // }
 
         return ticks;
     }

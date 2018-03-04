@@ -31,15 +31,15 @@ pub enum WordRegister {
 impl Registers {
     pub fn new() -> Registers {
         Registers {
-            a: 0,
-            b: 0,
-            c: 0,
-            d: 0,
-            e: 0,
-            h: 0,
-            l: 0,
-            f: 0,
-            sp: 0,
+            a: 0x11,
+            b: 0x00,
+            c: 0x13,
+            d: 0x00,
+            e: 0xD8,
+            h: 0x01,
+            l: 0x4D,
+            f: 0xB0,
+            sp: 0xFFFE, // top of ram
             pc: 0x0100 // rom instruction start
         }
     }
