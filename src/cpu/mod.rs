@@ -25,28 +25,28 @@ struct Operation {
 macro_rules! dop {
     ($name:tt, $execute:expr) => (Operation {
         execute: &|cpu| {
-            println!($name);
+            print!($name);
             $execute(cpu)
         }
     });
     ($name:tt, u8, $execute:expr) => (Operation {
         execute: &|cpu: &mut CPU| {
             let value: u8 = cpu.fetch_byte();
-            println!($name, value);
+            print!($name, value);
             $execute(cpu, value)
         }
     });
     ($name:tt, i8, $execute:expr) => (Operation {
         execute: &|cpu: &mut CPU| {
             let value = cpu.fetch_byte() as i8;
-            println!($name, FormatAsSigned(value));
+            print!($name, FormatAsSigned(value));
             $execute(cpu, value)
         }
     });
     ($name:tt, u16, $execute:expr) => (Operation {
         execute: &|cpu: &mut CPU| {
             let value: u16 = cpu.fetch_word();
-            println!($name, value);
+            print!($name, value);
             $execute(cpu, value)
         }
     });
@@ -60,7 +60,7 @@ impl CPU {
         dop!("INC BC"              , &alu_inc_word!(BC)), // 0x03 INC BC
         dop!("INC B"               , &alu_inc_byte!(b)), // 0x04 INC B
         dop!("DEC B"               , &alu_dec_byte!(b)), // 0x05 DEC B
-        dop!("LD B,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.b = value; 2 }), // 0x06 LD B,d8
+        dop!("LD B,{:#04X}"   , u8 , &load!(b)), // 0x06 LD B,d8
         dop!("RLCA"                , &CPU::rotate_left_circular_accumulator), // 0x07 RLCA
         dop!("LD ({:#06X}),SP", u16, &|cpu: &mut CPU, addr| { cpu.mmu.write_word(addr, cpu.regs.sp); 5 }), // 0x08 LD (a16),SP
         dop!("ADD HL,BC"           , &|cpu: &mut CPU| { let v = cpu.regs.get_bc(); cpu.alu_add_to_hl(v); 2 }), // 0x09 ADD HL,BC
@@ -68,7 +68,7 @@ impl CPU {
         dop!("DEC BC"              , &alu_dec_word!(BC)), // 0x0B DEC BC
         dop!("INC C"               , &alu_inc_byte!(c)), // 0x0C INC C
         dop!("DEC C"               , &alu_dec_byte!(c)), // 0x0D DEC C
-        dop!("LD C,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.c = value; 2 }), // 0x0E LD C,d8
+        dop!("LD C,{:#04X}"   , u8 , &load!(c)), // 0x0E LD C,d8
         dop!("RRCA"                , &CPU::rotate_right_circular_accumulator), // 0x0F RRCA
 
         dop!("STOP"                , &CPU::stop), // 0x10 STOP
@@ -77,7 +77,7 @@ impl CPU {
         dop!("INC DE"              , &alu_inc_word!(DE)), // 0x13 INC DE
         dop!("INC D"               , &alu_inc_byte!(d)), // 0x14 INC D
         dop!("DEC D"               , &alu_dec_byte!(d)), // 0x15 DEC D
-        dop!("LD D,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.d = value; 2 }), // 0x16 LD D,d8
+        dop!("LD D,{:#04X}"   , u8 , &load!(d)), // 0x16 LD D,d8
         dop!("RLA"                 , &CPU::rotate_left_accumulator), // 0x07 RLA
         dop!("JR {:#02X}"     , i8 , &CPU::relative_jump), // 0x18 JR r8
         dop!("ADD HL,DE"           , &|cpu: &mut CPU| { let v = cpu.regs.get_de(); cpu.alu_add_to_hl(v); 2 }), // 0x19 ADD HL,DE
@@ -85,7 +85,7 @@ impl CPU {
         dop!("DEC DE"              , &alu_dec_word!(DE)), // 0x1B DEC DE
         dop!("INC E"               , &alu_inc_byte!(e)), // 0x1C INC E
         dop!("DEC E"               , &alu_dec_byte!(e)), // 0x1D DEC E
-        dop!("LD E,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.e = value; 2 }), // 0x1E LD E,d8
+        dop!("LD E,{:#04X}"   , u8 , &load!(e)), // 0x1E LD E,d8
         dop!("RRA"                 , &CPU::rotate_right_accumulator), // 0x1F RRA
 
         dop!("JR NZ,{:#02X}"  , i8 , &CPU::relative_jump_nz), // 0x20 JR NZ,r8
@@ -94,7 +94,7 @@ impl CPU {
         dop!("INC HL"              , &alu_inc_word!(HL)), // 0x23 INC HL
         dop!("INC H"               , &alu_inc_byte!(h)), // 0x24 INC H
         dop!("DEC H"               , &alu_dec_byte!(h)), // 0x25 DEC H
-        dop!("LD H,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.h = value; 2 }), // 0x26 LD H,d8
+        dop!("LD H,{:#04X}"   , u8 , &load!(h)), // 0x26 LD H,d8
         dop!("DDA"                 , &CPU::alu_decimal_adjust_accumulator), // 0x27 DAA
         dop!("JR Z,{:#04X}"   , i8 , &CPU::relative_jump_z), // 0x28 JR Z,r8
         dop!("ADD HL,HL"           , &|cpu: &mut CPU| { let v = cpu.regs.get_hl(); cpu.alu_add_to_hl(v); 2 }), // 0x29 ADD HL,HL
@@ -102,7 +102,7 @@ impl CPU {
         dop!("DEC HL"              , &alu_dec_word!(HL)), // 0x2B DEC HL
         dop!("INC L"               , &alu_inc_byte!(l)), // 0x2C INC L
         dop!("DEC L"               , &alu_dec_byte!(l)), // 0x2D DEC L
-        dop!("LD L,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.l = value; 2 }), // 0x2E LD L,d8
+        dop!("LD L,{:#04X}"   , u8 , &load!(l)), // 0x2E LD L,d8
         dop!("CPL"                 , &CPU::alu_complement), // 0x2F CPL
 
         dop!("JR NC,{:#04X}"  , i8 , &CPU::relative_jump_nc), // 0x30 JR NC,r8
@@ -119,7 +119,7 @@ impl CPU {
         dop!("DEC SP"              , &alu_dec_word!(SP)), // 0x3B DEC SP
         dop!("INC A"               , &alu_inc_byte!(a)), // 0x3C INC A
         dop!("DEC A"               , &alu_dec_byte!(a)), // 0x3D DEC A
-        dop!("LD A,{:#04X}"   , u8 , &|cpu: &mut CPU, value| { cpu.regs.a = value; 2 }), // 0x3E LD A,d8
+        dop!("LD A,{:#04X}"   , u8 , &load!(a)), // 0x3E LD A,d8
         dop!("CCF"                 , &CPU::alu_complement_carry_flag), // 0x3F CCF
 
         dop!("LD B,B"              , &load!(b,b)), // 0x40 LD B,B
@@ -301,7 +301,7 @@ impl CPU {
         dop!("AND A,{:#04X}"  , u8 , &|cpu: &mut CPU, value| { let a = cpu.regs.a; cpu.regs.a = cpu.alu_and(a, value); 2 }),
         dop!("RST 20H"             , &CPU::unimplemented),
         dop!("ADD SP,{:#04X}" , i8 , &|cpu: &mut CPU, value| { cpu.regs.sp = cpu.alu_add_to_sp(value); 4 }),
-        dop!("JP (HL)"             , &|cpu: &mut CPU| { cpu.regs.pc = cpu.mmu.read_word(cpu.regs.get_hl()); 1 }),
+        dop!("JP HL"               , &|cpu: &mut CPU| { cpu.regs.pc = cpu.regs.get_hl(); 1 }),
         dop!("LD ({:#06X}),A" , u16, &|cpu: &mut CPU, addr| { cpu.mmu.write_byte(addr, cpu.regs.a); 4 }),
         dop!("0xEB NOPE"           , &CPU::nonexistant),
         dop!("0xEC NOPE"           , &CPU::nonexistant),
@@ -318,7 +318,7 @@ impl CPU {
         dop!("OR {:#04X}"     , u8 , &|cpu: &mut CPU, value| { let a = cpu.regs.a; cpu.regs.a = cpu.alu_or(a, value); 2 }),
         dop!("RST 30H"             , &CPU::unimplemented),
         dop!("LD HL,SP+{:#04X}", i8, &|cpu: &mut CPU, value| { let r = cpu.alu_add_to_sp(value); cpu.regs.set_hl(r); 3 }),
-        dop!("LD SP,HL"            , &CPU::unimplemented),
+        dop!("LD SP,HL"            , &|cpu: &mut CPU| { let hl = cpu.regs.get_hl(); cpu.regs.sp = hl; 2 }),
         dop!("LD A,({:#06X})" , u16, &|cpu: &mut CPU, addr| { cpu.regs.a = cpu.mmu.read_byte(addr); 4 }),
         dop!("DI"                  , &CPU::disable_interupts),
         dop!("0xFC NOPE"           , &CPU::nonexistant),
@@ -620,7 +620,7 @@ impl CPU {
 
         let ticks = op_impl(self);
 
-        println!("af: {:#06X}, bc: {:#06X}, de: {:#06X}, hl: {:#06X}, sp: {:#06X}, pc: {:#06X}",
+        println!(" --> af: {:#06X}, bc: {:#06X}, de: {:#06X}, hl: {:#06X}, sp: {:#06X}, pc: {:#06X}",
             self.regs.get_af(),
             self.regs.get_bc(),
             self.regs.get_de(),
@@ -628,10 +628,6 @@ impl CPU {
             self.regs.sp,
             self.regs.pc
         );
-
-        if self.regs.pc > 0xD700  {
-            panic!("FUCK");
-        }
 
         return ticks;
     }

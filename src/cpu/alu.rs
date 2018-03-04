@@ -170,8 +170,8 @@ impl CPU {
 
     pub fn alu_add_to_hl(&mut self, value: u16) {
         let hl = self.regs.get_hl();
-        self.alu_add_word(hl, value);
-        self.regs.set_hl(hl);
+        let r = self.alu_add_word(hl, value);
+        self.regs.set_hl(r);
     }
 
     pub fn alu_add_to_sp(&mut self, value: i8) -> u16 {

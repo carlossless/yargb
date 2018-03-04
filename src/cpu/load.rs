@@ -7,7 +7,13 @@ macro_rules! load {
             cpu.regs.$source_register = cpu.regs.$target_register;
             1
         }
-    )
+    );
+    ($source_register:ident) => (
+        |cpu: &mut CPU, value| {
+            cpu.regs.$source_register = value;
+            2
+        }
+    );
 }
 
 impl CPU {
