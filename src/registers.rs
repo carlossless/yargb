@@ -10,6 +10,8 @@ pub struct Registers {
     f: u8,
     pub sp: u16,
     pub pc: u16,
+    
+    pub ime: bool,
 }
 
 #[repr(u8)]
@@ -39,6 +41,7 @@ pub const DEFAULT_REGISTERS: Registers = Registers {
     f: 0xB0,
     sp: 0xFFFE, // top of ram
     pc: 0x0100, // rom instruction start
+    ime: false,
 };
 
 impl Registers {
@@ -114,5 +117,12 @@ impl Registers {
 
     pub fn get_flag(&mut self, mask: Flag) -> bool {
         (self.f & (mask as u8)) != 0
+    }
+
+    pub fn one_line_rep(&self) -> String {
+        format!(
+            "A:{:02X} F:{:02X} B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} SP:{:04X} PC:{:04X}",
+            self.a, self.f, self.b, self.c, self.d, self.e, self.h, self.l, self.sp, self.pc
+        )
     }
 }

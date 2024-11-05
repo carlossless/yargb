@@ -19,12 +19,16 @@ pub struct CPU {
 }
 
 struct Operation {
+    mneumonic: &'static str,
+    size: usize,
     execute: &'static dyn Fn(&mut CPU) -> usize,
 }
 
 macro_rules! dop {
     ($name:tt, $execute:expr) => {
         Operation {
+            mneumonic: $name,
+            size: 1,
             execute: &|cpu| {
                 // print!($name);
                 $execute(cpu)
@@ -33,6 +37,8 @@ macro_rules! dop {
     };
     ($name:tt, u8, $execute:expr) => {
         Operation {
+            mneumonic: $name,
+            size: 2,
             execute: &|cpu: &mut CPU| {
                 let value: u8 = cpu.fetch_byte();
                 // print!($name, value);
@@ -42,6 +48,8 @@ macro_rules! dop {
     };
     ($name:tt, i8, $execute:expr) => {
         Operation {
+            mneumonic: $name,
+            size: 2,
             execute: &|cpu: &mut CPU| {
                 let value = cpu.fetch_byte() as i8;
                 // print!($name, FormatAsSigned(value));
@@ -51,6 +59,8 @@ macro_rules! dop {
     };
     ($name:tt, u16, $execute:expr) => {
         Operation {
+            mneumonic: $name,
+            size: 3,
             execute: &|cpu: &mut CPU| {
                 let value: u16 = cpu.fetch_word();
                 // print!($name, value);
@@ -140,7 +150,7 @@ impl CPU {
         dop!("INC H", &alu_inc_byte!(h)), // 0x24 INC H
         dop!("DEC H", &alu_dec_byte!(h)), // 0x25 DEC H
         dop!("LD H,{:#04X}", u8, &load!(h)), // 0x26 LD H,d8
-        dop!("DDA", &CPU::alu_decimal_adjust_accumulator), // 0x27 DAA
+        dop!("DAA", &CPU::alu_decimal_adjust_accumulator), // 0x27 DAA
         dop!("JR Z,{:#04X}", i8, &CPU::relative_jump_z), // 0x28 JR Z,r8
         dop!("ADD HL,HL", &|cpu: &mut CPU| {
             let v = cpu.regs.get_hl();
@@ -169,7 +179,7 @@ impl CPU {
             cpu.regs.set_hl(addr - 1);
             2
         }), // 0x32 LD (HL-),A
-        dop!("INC SP", &alu_inc_word!(SP)), // 0x34 INC SP
+        dop!("INC SP", &alu_inc_word!(SP)), // 0x33 INC SP
         dop!("INC (HL)", &|cpu: &mut CPU| {
             let a = cpu.regs.get_hl();
             let mut v = cpu.mmu.read_byte(a);
@@ -528,7 +538,7 @@ impl CPU {
             cpu.regs.a = cpu.mmu.read_byte(addr as u16 + 0xFF00);
             2
         }),
-        dop!("DI", &CPU::enable_interupts),
+        dop!("DI", &CPU::disable_interupts),
         dop!("0xF4 NOPE", &CPU::nonexistant),
         dop!("PUSH AF", &CPU::stack_push_af),
         dop!("OR {:#04X}", u8, &|cpu: &mut CPU, value| {
@@ -551,7 +561,7 @@ impl CPU {
             cpu.regs.a = cpu.mmu.read_byte(addr);
             4
         }),
-        dop!("DI", &CPU::disable_interupts),
+        dop!("EI", &CPU::enable_interupts),
         dop!("0xFC NOPE", &CPU::nonexistant),
         dop!("0xFD NOPE", &CPU::nonexistant),
         dop!("CP A,{:#04X}", u8, &|cpu: &mut CPU, value| {
@@ -822,6 +832,16 @@ impl CPU {
     ];
 
     pub fn new(rom_data: &[u8]) -> CPU {
+        // print!("OPCODES");
+        // for (addr, op) in Self::OPS.iter().enumerate() {
+        //     println!("{:02x} {:}", addr, op.mneumonic);
+        // }
+
+        // print!("CB OPCODES");
+        // for (addr, op) in Self::CB_OPS.iter().enumerate() {
+        //     println!("{:02x} {:}", addr, op.mneumonic);
+        // }
+
         CPU {
             regs: Registers::new(),
             mmu: MMU::new(rom_data),
@@ -846,6 +866,15 @@ impl CPU {
 
         let op_code = self.fetch_byte();
         let op = &CPU::OPS[op_code as usize];
+        if op.size == 3 {
+            let arg = self.mmu.read_word(self.regs.pc);
+            println!("OP: {:#04X} {:20} {:#06X} {:}", op_code, op.mneumonic, arg, self.regs.one_line_rep());
+        } else if op.size == 2 {
+            let arg = self.mmu.read_byte(self.regs.pc);
+            println!("OP: {:#04X} {:20}   {:#04X} {:}", op_code, op.mneumonic, arg, self.regs.one_line_rep());
+        } else {
+            println!("OP: {:#04X} {:20}        {:}", op_code, op.mneumonic, self.regs.one_line_rep());
+        }
         let op_impl = op.execute;
 
         let ticks = op_impl(self);
@@ -886,12 +915,16 @@ impl CPU {
     }
 
     fn enable_interupts(&mut self) -> usize {
-        println!("INTERUPTS NOT IMPLEMENTED YET");
+        println!("enable_interupts");
+        self.regs.ime = true;
+        // TODO: enable interupts only an instruction later
         1
     }
 
     fn disable_interupts(&mut self) -> usize {
-        println!("INTERUPTS NOT IMPLEMENTED YET");
+        println!("disable_interupts");
+        self.regs.ime = false;
+        // TODO: disable interupts only an instruction later
         1
     }
 

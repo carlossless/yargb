@@ -52,7 +52,7 @@ impl CPU {
         self.regs.set_flag(N, false);
         self.regs.set_flag(H, false);
         self.regs.set_flag(C, (a & (1 << 7)) != 0);
-        self.regs.a = a << 1 | (if c { 1 } else { 0 });
+        self.regs.a = (a << 1) | (if c { 1 } else { 0 });
         1
     }
 
@@ -82,7 +82,7 @@ impl CPU {
         self.regs.set_flag(N, false);
         self.regs.set_flag(H, false);
         self.regs.set_flag(C, (a & 1) != 0);
-        self.regs.a = a >> 1 | (if c { 1 << 7 } else { 0 });
+        self.regs.a = (a >> 1) | (if c { 1 << 7 } else { 0 });
         1
     }
 
