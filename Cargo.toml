@@ -7,3 +7,4 @@ authors = ["Karolis Stasaitis <contact@carlossless.io>"]
 num = "*"
 glutin = "*"
 glium = "*"
+sdl2 = "0.37.0"

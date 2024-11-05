@@ -1,0 +1,50 @@
+on:
+  push: {}
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+name: Build
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v13
+    - name: Setup Nix cache
+      uses: DeterminateSystems/magic-nix-cache-action@v7
+    - name: Lint
+      run: nix develop --command cargo fmt -- --check
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v13
+    - name: Setup Nix cache
+      uses: DeterminateSystems/magic-nix-cache-action@v7
+    - name: Test
+      run: nix develop --command cargo test
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v13
+    - name: Setup Nix cache
+      uses: DeterminateSystems/magic-nix-cache-action@v7
+    - name: Build
+      run: nix develop --command cargo build --release
+    - name: Archive code coverage results
+      uses: actions/upload-artifact@v4
+      with:
+        path: target/release/yargb

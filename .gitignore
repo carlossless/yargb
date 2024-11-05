@@ -1,6 +1,10 @@
 .DS_STORE
+
 roms/
+
 /target/
+**/*.rs.bk
+
+.direnv/
 .idea/
 .vscode/
-**/*.rs.bk

@@ -1,41 +1,40 @@
 use cpu::CPU;
-use registers::Flag::{ Z, N, H, C };
+use registers::Flag::{C, H, N, Z};
 
 macro_rules! rotate_right {
-    ($source_register:ident) => (
+    ($source_register:ident) => {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
             let r = cpu.rotate_right(x);
             cpu.regs.$source_register = r;
             2
         }
-    )
+    };
 }
 
 macro_rules! shift_right_logical {
-    ($source_register:ident) => (
+    ($source_register:ident) => {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
             let r = cpu.shift_right_logical(x);
             cpu.regs.$source_register = r;
             2
         }
-    )
+    };
 }
 
 macro_rules! swap {
-    ($source_register:ident) => (
+    ($source_register:ident) => {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
             let r = cpu.swap(x);
             cpu.regs.$source_register = r;
             2
         }
-    )
+    };
 }
 
 impl CPU {
-
     pub fn rotate_left_circular_accumulator(&mut self) -> usize {
         let a = self.regs.a;
         self.regs.set_flag(Z, false);
@@ -105,5 +104,4 @@ impl CPU {
         self.regs.set_flag(C, false);
         r
     }
-
 }

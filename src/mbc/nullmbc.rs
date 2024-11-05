@@ -3,7 +3,7 @@ use mbc::MBC;
 const ROM_SIZE: usize = 0x7D00; // 32kB
 
 pub struct NULLMBC {
-    rom: [u8; ROM_SIZE] // 32kB
+    rom: [u8; ROM_SIZE], // 32kB
 }
 
 impl NULLMBC {
@@ -13,6 +13,10 @@ impl NULLMBC {
 }
 
 impl MBC for NULLMBC {
-    fn read_rom(&self, addr: u16) -> u8 { self.rom[addr as usize] }
-    fn write_rom(&self, addr: u16, value: u8) { println!("Writting Rom??? {:#06X} {:#04X}", addr, value); }
+    fn read_rom(&self, addr: u16) -> u8 {
+        self.rom[addr as usize]
+    }
+    fn write_rom(&self, addr: u16, value: u8) {
+        println!("Writting Rom??? {:#06X} {:#04X}", addr, value);
+    }
 }

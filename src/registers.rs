@@ -1,4 +1,4 @@
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Registers {
     pub a: u8,
     pub b: u8,
@@ -17,7 +17,7 @@ pub enum Flag {
     Z = 1 << 7,
     N = 1 << 6,
     H = 1 << 5,
-    C = 1 << 4
+    C = 1 << 4,
 }
 
 pub enum WordRegister {
@@ -25,22 +25,26 @@ pub enum WordRegister {
     BC,
     DE,
     HL,
-    SP
+    SP,
 }
+
+pub const DEFAULT_REGISTERS: Registers = Registers {
+    a: 0x11,
+    b: 0x00,
+    c: 0x13,
+    d: 0x00,
+    e: 0xD8,
+    h: 0x01,
+    l: 0x4D,
+    f: 0xB0,
+    sp: 0xFFFE, // top of ram
+    pc: 0x0100, // rom instruction start
+};
 
 impl Registers {
     pub fn new() -> Registers {
         Registers {
-            a: 0x11,
-            b: 0x00,
-            c: 0x13,
-            d: 0x00,
-            e: 0xD8,
-            h: 0x01,
-            l: 0x4D,
-            f: 0xB0,
-            sp: 0xFFFE, // top of ram
-            pc: 0x0100 // rom instruction start
+            ..DEFAULT_REGISTERS
         }
     }
 
@@ -86,7 +90,7 @@ impl Registers {
             WordRegister::BC => self.set_bc(value),
             WordRegister::DE => self.set_de(value),
             WordRegister::HL => self.set_hl(value),
-            WordRegister::SP => self.sp = value
+            WordRegister::SP => self.sp = value,
         };
     }
 
@@ -96,7 +100,7 @@ impl Registers {
             WordRegister::BC => self.get_bc(),
             WordRegister::DE => self.get_de(),
             WordRegister::HL => self.get_hl(),
-            WordRegister::SP => self.sp
+            WordRegister::SP => self.sp,
         }
     }
 
@@ -111,5 +115,4 @@ impl Registers {
     pub fn get_flag(&mut self, mask: Flag) -> bool {
         (self.f & (mask as u8)) != 0
     }
-
 }

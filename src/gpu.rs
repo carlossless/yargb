@@ -2,7 +2,7 @@ pub struct GPU {
     video_ram: [u8; 0x2000],
     pub bgp: u8,
     pub scx: u8,
-    pub scy: u8
+    pub scy: u8,
 }
 
 impl GPU {
@@ -11,7 +11,7 @@ impl GPU {
             video_ram: [0; 0x2000],
             bgp: 0,
             scx: 0,
-            scy: 0
+            scy: 0,
         }
     }
 

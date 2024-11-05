@@ -1,11 +1,11 @@
 use cpu::CPU;
-use registers::Flag::{ Z, C };
+use registers::Flag::{C, Z};
 
 impl CPU {
     pub fn stack_ret_nz(&mut self) -> usize {
         if !self.regs.get_flag(Z) {
             self.regs.pc = self.stack_pop();
-            return 5
+            return 5;
         }
         2
     }
@@ -13,7 +13,7 @@ impl CPU {
     pub fn stack_ret_nc(&mut self) -> usize {
         if !self.regs.get_flag(C) {
             self.regs.pc = self.stack_pop();
-            return 5
+            return 5;
         }
         2
     }
@@ -21,7 +21,7 @@ impl CPU {
     pub fn stack_ret_z(&mut self) -> usize {
         if self.regs.get_flag(Z) {
             self.regs.pc = self.stack_pop();
-            return 5
+            return 5;
         }
         2
     }
@@ -29,45 +29,45 @@ impl CPU {
     pub fn stack_ret_c(&mut self) -> usize {
         if self.regs.get_flag(C) {
             self.regs.pc = self.stack_pop();
-            return 5
+            return 5;
         }
         2
     }
 
     pub fn stack_ret(&mut self) -> usize {
         self.regs.pc = self.stack_pop();
-        return 4
+        return 4;
     }
 
-    pub fn stack_call_nz(&mut self, value:u16) -> usize {
+    pub fn stack_call_nz(&mut self, value: u16) -> usize {
         if !self.regs.get_flag(Z) {
-            return self.stack_call(value)
+            return self.stack_call(value);
         }
         3
     }
 
-    pub fn stack_call_nc(&mut self, value:u16) -> usize {
+    pub fn stack_call_nc(&mut self, value: u16) -> usize {
         if !self.regs.get_flag(C) {
-            return self.stack_call(value)
+            return self.stack_call(value);
         }
         3
     }
 
-    pub fn stack_call_z(&mut self, value:u16) -> usize {
+    pub fn stack_call_z(&mut self, value: u16) -> usize {
         if self.regs.get_flag(Z) {
-            return self.stack_call(value)
+            return self.stack_call(value);
         }
         3
     }
 
-    pub fn stack_call_c(&mut self, value:u16) -> usize {
+    pub fn stack_call_c(&mut self, value: u16) -> usize {
         if self.regs.get_flag(C) {
-            return self.stack_call(value)
+            return self.stack_call(value);
         }
         3
     }
 
-    pub fn stack_call(&mut self, value:u16) -> usize {
+    pub fn stack_call(&mut self, value: u16) -> usize {
         let next_op = self.regs.pc; // value taken before hand
         self.stack_push(next_op);
         self.regs.pc = value;
@@ -104,7 +104,7 @@ impl CPU {
         4
     }
 
-    pub fn stack_push(&mut self, value:u16) {
+    pub fn stack_push(&mut self, value: u16) {
         self.regs.sp -= 2;
         self.mmu.write_word(self.regs.sp, value);
     }

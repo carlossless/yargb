@@ -1,54 +1,54 @@
 use cpu::CPU;
-use registers::Flag::{ Z, N, H, C };
+use registers::Flag::{C, H, N, Z};
 
 macro_rules! alu_inc_byte {
-    ($register:ident) => (
+    ($register:ident) => {
         |cpu: &mut CPU| {
             let mut v = cpu.regs.$register;
             cpu.alu_inc_byte(&mut v);
             cpu.regs.$register = v;
             1
         }
-    )
+    };
 }
 
 macro_rules! alu_dec_byte {
-    ($register:ident) => (
+    ($register:ident) => {
         |cpu: &mut CPU| {
             let mut v = cpu.regs.$register;
             cpu.alu_dec_byte(&mut v);
             cpu.regs.$register = v;
             1
         }
-    )
+    };
 }
 
 // TODO: could be replaced by patern matched functions instead of the intermal match
 macro_rules! alu_inc_word {
-    ($register:ident) => (
+    ($register:ident) => {
         |cpu: &mut CPU| {
             let mut v = cpu.regs.get($register);
             cpu.alu_inc_word(&mut v);
             cpu.regs.set($register, v);
             2
         }
-    )
+    };
 }
 
 // TODO: could be replaced by patern matched functions instead of the intermal match
 macro_rules! alu_dec_word {
-    ($register:ident) => (
+    ($register:ident) => {
         |cpu: &mut CPU| {
             let mut v = cpu.regs.get($register);
             cpu.alu_dec_word(&mut v);
             cpu.regs.set($register, v);
             2
         }
-    )
+    };
 }
 
 macro_rules! alu_add {
-    ($source_register:ident, $target_register:ident) => (
+    ($source_register:ident, $target_register:ident) => {
         |cpu: &mut CPU| {
             let addend = cpu.regs.$target_register;
             let v = cpu.regs.$source_register;
@@ -56,11 +56,11 @@ macro_rules! alu_add {
             cpu.regs.$source_register = r;
             1
         }
-    )
+    };
 }
 
 macro_rules! alu_adc {
-    ($source_register:ident, $target_register:ident) => (
+    ($source_register:ident, $target_register:ident) => {
         |cpu: &mut CPU| {
             let addend = cpu.regs.$target_register;
             let v = cpu.regs.$source_register;
@@ -68,11 +68,11 @@ macro_rules! alu_adc {
             cpu.regs.$source_register = r;
             1
         }
-    )
+    };
 }
 
 macro_rules! alu_sub {
-    ($source_register:ident, $target_register:ident) => (
+    ($source_register:ident, $target_register:ident) => {
         |cpu: &mut CPU| {
             let addend = cpu.regs.$target_register;
             let v = cpu.regs.$source_register;
@@ -80,11 +80,11 @@ macro_rules! alu_sub {
             cpu.regs.$source_register = r;
             1
         }
-    )
+    };
 }
 
 macro_rules! alu_sbc {
-    ($source_register:ident, $target_register:ident) => (
+    ($source_register:ident, $target_register:ident) => {
         |cpu: &mut CPU| {
             let addend = cpu.regs.$target_register;
             let v = cpu.regs.$source_register;
@@ -92,11 +92,11 @@ macro_rules! alu_sbc {
             cpu.regs.$source_register = r;
             1
         }
-    )
+    };
 }
 
 macro_rules! alu_and {
-    ($source_register:ident, $target_register:ident) => (
+    ($source_register:ident, $target_register:ident) => {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
             let y = cpu.regs.$target_register;
@@ -104,11 +104,11 @@ macro_rules! alu_and {
             cpu.regs.$source_register = r;
             1
         }
-    )
+    };
 }
 
 macro_rules! alu_xor {
-    ($source_register:ident, $target_register:ident) => (
+    ($source_register:ident, $target_register:ident) => {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
             let y = cpu.regs.$target_register;
@@ -116,11 +116,11 @@ macro_rules! alu_xor {
             cpu.regs.$source_register = r;
             1
         }
-    )
+    };
 }
 
 macro_rules! alu_or {
-    ($source_register:ident, $target_register:ident) => (
+    ($source_register:ident, $target_register:ident) => {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
             let y = cpu.regs.$target_register;
@@ -128,22 +128,21 @@ macro_rules! alu_or {
             cpu.regs.$source_register = r;
             1
         }
-    )
+    };
 }
 
 macro_rules! alu_cp {
-    ($source_register:ident, $target_register:ident) => (
+    ($source_register:ident, $target_register:ident) => {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
             let y = cpu.regs.$target_register;
             cpu.alu_cp(x, y);
             1
         }
-    )
+    };
 }
 
 impl CPU {
-
     pub fn alu_inc_byte(&mut self, value: &mut u8) {
         let result = value.wrapping_add(1);
         self.regs.set_flag(Z, result == 0);
@@ -179,15 +178,18 @@ impl CPU {
         let sp = self.regs.sp;
         self.regs.set_flag(Z, false);
         self.regs.set_flag(N, false);
-        self.regs.set_flag(H, (sp & 0x000F) + (delta & 0x000F) > 0x000F);
-        self.regs.set_flag(C, (sp & 0x00FF) + (delta & 0x00FF) > 0x00FF);
+        self.regs
+            .set_flag(H, (sp & 0x000F) + (delta & 0x000F) > 0x000F);
+        self.regs
+            .set_flag(C, (sp & 0x00FF) + (delta & 0x00FF) > 0x00FF);
         sp.wrapping_add(delta)
     }
 
     pub fn alu_add_word(&mut self, lhs: u16, rhs: u16) -> u16 {
         let result = lhs.wrapping_add(rhs);
         self.regs.set_flag(N, false);
-        self.regs.set_flag(H, ((lhs & 0x07FF) + (rhs & 0x07FF)) > 0x07FF);
+        self.regs
+            .set_flag(H, ((lhs & 0x07FF) + (rhs & 0x07FF)) > 0x07FF);
         self.regs.set_flag(C, lhs > 0xFFFF - rhs);
         result
     }
@@ -206,7 +208,8 @@ impl CPU {
         let result = lhs.wrapping_add(rhs).wrapping_add(carry);
         self.regs.set_flag(Z, result == 0);
         self.regs.set_flag(N, false);
-        self.regs.set_flag(H, ((lhs & 0x0F) + (rhs & 0x0F)).wrapping_add(carry) > 0x0F);
+        self.regs
+            .set_flag(H, ((lhs & 0x0F) + (rhs & 0x0F)).wrapping_add(carry) > 0x0F);
         self.regs.set_flag(C, lhs > 0xFF - rhs - carry);
         result
     }
@@ -225,8 +228,10 @@ impl CPU {
         let result = lhs.wrapping_add(rhs).wrapping_add(carry);
         self.regs.set_flag(Z, result == 0);
         self.regs.set_flag(N, true);
-        self.regs.set_flag(H, (lhs & 0x0F) < (rhs & 0x0F).wrapping_add(carry));
-        self.regs.set_flag(C, (lhs as u16) < (rhs as u16) + (carry as u16));
+        self.regs
+            .set_flag(H, (lhs & 0x0F) < (rhs & 0x0F).wrapping_add(carry));
+        self.regs
+            .set_flag(C, (lhs as u16) < (rhs as u16) + (carry as u16));
         result
     }
 
@@ -271,24 +276,61 @@ impl CPU {
         let lower_digit = a & 0xF;
         c = if n {
             match (c, h, upper_digit, lower_digit) {
-                (false, false, 0x0...0x9, 0x0...0x9) => { false }
-                (false, false, 0x0...0x8, 0xA...0xF) => { a = a.wrapping_add(0x06); false }
-                (false, true,  0x0...0x9, 0x0...0x3) => { a = a.wrapping_add(0x06); false }
-                (false, false, 0xA...0xF, 0x0...0x9) => { a = a.wrapping_add(0x60); true }
-                (false, false, 0x9...0xF, 0xA...0xF) => { a = a.wrapping_add(0x66); true }
-                (false, true , 0xA...0xF, 0x0...0x3) => { a = a.wrapping_add(0x66); true }
-                (true , false, 0x0...0x2, 0x0...0x9) => { a = a.wrapping_add(0x60); true }
-                (true , false, 0x0...0x2, 0xA...0xF) => { a = a.wrapping_add(0x66); true }
-                (true , true , 0x0...0x3, 0x0...0x3) => { a = a.wrapping_add(0x66); true }
-                _ => { panic!("DAA should never reach this case") }
+                (false, false, 0x0..=0x9, 0x0..=0x9) => false,
+                (false, false, 0x0..=0x8, 0xA..=0xF) => {
+                    a = a.wrapping_add(0x06);
+                    false
+                }
+                (false, true, 0x0..=0x9, 0x0..=0x3) => {
+                    a = a.wrapping_add(0x06);
+                    false
+                }
+                (false, false, 0xA..=0xF, 0x0..=0x9) => {
+                    a = a.wrapping_add(0x60);
+                    true
+                }
+                (false, false, 0x9..=0xF, 0xA..=0xF) => {
+                    a = a.wrapping_add(0x66);
+                    true
+                }
+                (false, true, 0xA..=0xF, 0x0..=0x3) => {
+                    a = a.wrapping_add(0x66);
+                    true
+                }
+                (true, false, 0x0..=0x2, 0x0..=0x9) => {
+                    a = a.wrapping_add(0x60);
+                    true
+                }
+                (true, false, 0x0..=0x2, 0xA..=0xF) => {
+                    a = a.wrapping_add(0x66);
+                    true
+                }
+                (true, true, 0x0..=0x3, 0x0..=0x3) => {
+                    a = a.wrapping_add(0x66);
+                    true
+                }
+                _ => {
+                    panic!("DAA should never reach this case")
+                }
             }
         } else {
             match (c, h, upper_digit, lower_digit) {
-                (false, false, 0x0...0x9, 0x0...0x9) => { false }
-                (false, true,  0x0...0x8, 0x6...0xF) => { a = a.wrapping_add(0xFA); false }
-                (false, false, 0x9...0xF, 0xA...0xF) => { a = a.wrapping_add(0xA0); true }
-                (true , true , 0xA...0xF, 0x0...0x3) => { a = a.wrapping_add(0x9A); true }
-                _ => { panic!("DAA should never reach this case") }
+                (false, false, 0x0..=0x9, 0x0..=0x9) => false,
+                (false, true, 0x0..=0x8, 0x6..=0xF) => {
+                    a = a.wrapping_add(0xFA);
+                    false
+                }
+                (false, false, 0x9..=0xF, 0xA..=0xF) => {
+                    a = a.wrapping_add(0xA0);
+                    true
+                }
+                (true, true, 0xA..=0xF, 0x0..=0x3) => {
+                    a = a.wrapping_add(0x9A);
+                    true
+                }
+                _ => {
+                    panic!("DAA should never reach this case")
+                }
             }
         };
         self.regs.set_flag(Z, a == 0);
@@ -319,6 +361,4 @@ impl CPU {
         self.regs.set_flag(C, c);
         1
     }
-
 }
-
