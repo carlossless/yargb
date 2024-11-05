@@ -5,6 +5,4 @@ authors = ["Karolis Stasaitis <contact@carlossless.io>"]
 
 [dependencies]
 num = "*"
-glutin = "*"
-glium = "*"
 sdl2 = "0.37.0"
