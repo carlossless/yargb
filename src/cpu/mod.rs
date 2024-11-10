@@ -8,6 +8,7 @@ mod load;
 #[macro_use]
 mod alu;
 mod jump;
+#[macro_use]
 mod stack;
 #[macro_use]
 mod shift;
@@ -233,7 +234,7 @@ impl CPU {
             cpu.regs.c = cpu.mmu.read_byte(cpu.regs.get_hl());
             2
         }), // 0x4E LD C,(HL)
-        dop!("LD C,A", &load!(b, a)), // 0x4F LD C,A
+        dop!("LD C,A", &load!(c, a)), // 0x4F LD C,A
         dop!("LD D,B", &load!(d, b)), // 0x50 LD B,B
         dop!("LD D,C", &load!(d, c)), // 0x51 LD B,C
         dop!("LD D,D", &load!(d, d)), // 0x52 LD B,D
@@ -437,7 +438,7 @@ impl CPU {
             cpu.regs.a = cpu.alu_add_byte(a, value);
             2
         }),
-        dop!("RST 00H", &CPU::unimplemented),
+        dop!("RST 00H", &stack_rst!(0x00)),
         dop!("RET Z", &CPU::stack_ret_z),
         dop!("RET", &CPU::stack_ret), // 0xC9 RET
         dop!("JP Z,{:#06X}", u16, &CPU::jump_z),
@@ -449,7 +450,7 @@ impl CPU {
             cpu.regs.a = cpu.alu_add_byte_with_carry(a, value);
             2
         }),
-        dop!("RST 08H", &CPU::unimplemented),
+        dop!("RST 08H", &stack_rst!(0x08)),
         dop!("RET NC", &CPU::stack_ret_nc),
         dop!("POP DE", &|cpu: &mut CPU| {
             let value = cpu.stack_pop();
@@ -465,9 +466,9 @@ impl CPU {
             cpu.regs.a = cpu.alu_sub_byte(a, value);
             2
         }),
-        dop!("RST 10H", &CPU::unimplemented),
+        dop!("RST 10H", &stack_rst!(0x10)),
         dop!("RET C", &CPU::stack_ret_c),
-        dop!("RETI", &CPU::unimplemented),
+        dop!("RETI", &CPU::stack_reti),
         dop!("JP C,{:#06X}", u16, &CPU::jump_c),
         dop!("0xDB NOPE", &CPU::nonexistant),
         dop!("CALL C,{:#06X}", u16, &CPU::stack_call_c),
@@ -477,8 +478,8 @@ impl CPU {
             cpu.regs.a = cpu.alu_sub_byte_with_carry(a, value);
             2
         }),
-        dop!("RST 18H", &CPU::unimplemented),
-        dop!("LDH ({:#04X}),A", u8, &|cpu: &mut CPU, addr| {
+        dop!("RST 18H", &stack_rst!(0x18)),
+        dop!("LD ({:#04X}),A", u8, &|cpu: &mut CPU, addr| {
             let value = cpu.regs.a;
             cpu.mmu.write_byte(addr as u16 + 0xFF00, value);
             3
@@ -502,7 +503,7 @@ impl CPU {
             cpu.regs.a = cpu.alu_and(a, value);
             2
         }),
-        dop!("RST 20H", &CPU::unimplemented),
+        dop!("RST 20H", &stack_rst!(0x20)),
         dop!("ADD SP,{:#04X}", i8, &|cpu: &mut CPU, value| {
             cpu.regs.sp = cpu.alu_add_to_sp(value);
             4
@@ -523,8 +524,8 @@ impl CPU {
             cpu.regs.a = cpu.alu_xor(a, value);
             2
         }),
-        dop!("RST 28H", &CPU::unimplemented),
-        dop!("LDH A,({:#04X})", u8, &|cpu: &mut CPU, addr| {
+        dop!("RST 28H", &stack_rst!(0x28)),
+        dop!("LD A,({:#04X})", u8, &|cpu: &mut CPU, addr| {
             cpu.regs.a = cpu.mmu.read_byte(addr as u16 + 0xFF00);
             3
         }),
@@ -546,7 +547,7 @@ impl CPU {
             cpu.regs.a = cpu.alu_or(a, value);
             2
         }),
-        dop!("RST 30H", &CPU::unimplemented),
+        dop!("RST 30H", &stack_rst!(0x30)),
         dop!("LD HL,SP+{:#04X}", i8, &|cpu: &mut CPU, value| {
             let r = cpu.alu_add_to_sp(value);
             cpu.regs.set_hl(r);
@@ -569,7 +570,7 @@ impl CPU {
             cpu.alu_cp(a, value);
             2
         }),
-        dop!("RST 38H", &CPU::unimplemented),
+        dop!("RST 38H", &stack_rst!(0x38)),
     ];
 
     const CB_OPS: &'static [Operation] = &[
@@ -831,7 +832,7 @@ impl CPU {
         dop!("SET 7,A", &CPU::unimplemented),
     ];
 
-    pub fn new(rom_data: &[u8]) -> CPU {
+    pub fn new(rom_data: &Vec<u8>) -> CPU {
         // print!("OPCODES");
         // for (addr, op) in Self::OPS.iter().enumerate() {
         //     println!("{:02x} {:}", addr, op.mneumonic);
@@ -854,34 +855,21 @@ impl CPU {
     }
 
     fn process(&mut self) -> usize {
-        // let pc = self.regs.pc;
-        // println!("af: {:#06X}, bc: {:#06X}, de: {:#06X}, hl: {:#06X}, sp: {:#06X}, pc: {:#06X}",
-        //     self.regs.get_af(),
-        //     self.regs.get_bc(),
-        //     self.regs.get_de(),
-        //     self.regs.get_hl(),
-        //     self.regs.sp,
-        //     self.regs.pc
-        // );
-
+        let regs = self.regs;
         let op_code = self.fetch_byte();
         let op = &CPU::OPS[op_code as usize];
         if op.size == 3 {
             let arg = self.mmu.read_word(self.regs.pc);
-            println!("OP: {:#04X} {:20} {:#06X} {:}", op_code, op.mneumonic, arg, self.regs.one_line_rep());
+            println!("OP: {:#04X} {:20} {:#06X} {:}", op_code, op.mneumonic, arg, regs.one_line_rep());
         } else if op.size == 2 {
             let arg = self.mmu.read_byte(self.regs.pc);
-            println!("OP: {:#04X} {:20}   {:#04X} {:}", op_code, op.mneumonic, arg, self.regs.one_line_rep());
+            println!("OP: {:#04X} {:20}   {:#04X} {:}", op_code, op.mneumonic, arg, regs.one_line_rep());
         } else {
-            println!("OP: {:#04X} {:20}        {:}", op_code, op.mneumonic, self.regs.one_line_rep());
+            println!("OP: {:#04X} {:20}        {:}", op_code, op.mneumonic, regs.one_line_rep());
         }
         let op_impl = op.execute;
 
         let ticks = op_impl(self);
-
-        // if 0x0741 == pc {
-        //     panic!("Gotchya!");
-        // }
 
         return ticks;
     }

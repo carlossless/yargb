@@ -210,7 +210,9 @@ impl CPU {
         self.regs.set_flag(N, false);
         self.regs
             .set_flag(H, ((lhs & 0x0F) + (rhs & 0x0F)).wrapping_add(carry) > 0x0F);
-        self.regs.set_flag(C, lhs > 0xFF - rhs - carry);
+        let carria = if 0xFF - rhs != 0 { lhs > 0xFF - rhs - carry } else { carry == 1 };
+        self.regs.set_flag(C, carria);
+
         result
     }
 

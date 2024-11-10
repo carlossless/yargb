@@ -1,6 +1,14 @@
 use cpu::CPU;
 use registers::Flag::{C, Z};
 
+macro_rules! stack_rst {
+    ($addr:expr) => {
+        |cpu: &mut CPU| {
+            cpu.stack_rst($addr)
+        }
+    };
+}
+
 impl CPU {
     pub fn stack_ret_nz(&mut self) -> usize {
         if !self.regs.get_flag(Z) {
@@ -37,6 +45,17 @@ impl CPU {
     pub fn stack_ret(&mut self) -> usize {
         self.regs.pc = self.stack_pop();
         return 4;
+    }
+
+    pub fn stack_reti(&mut self) -> usize {
+        self.regs.pc = self.stack_pop();
+        self.regs.ime = false; // FIXME: should be set to the pre-interrupt value
+        return 4;
+    }
+
+    pub fn stack_rst(&mut self, addr: u16) -> usize {
+        self.stack_call(addr);
+        4
     }
 
     pub fn stack_call_nz(&mut self, value: u16) -> usize {
