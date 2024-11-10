@@ -877,6 +877,17 @@ impl CPU {
     fn process_cb(&mut self) -> usize {
         let op_code = self.fetch_byte();
         let op = &CPU::CB_OPS[op_code as usize];
+
+        if op.size == 3 {
+            let arg = self.mmu.read_word(self.regs.pc);
+            println!("CB OP: {:#04X} {:20} {:#06X}", op_code, op.mneumonic, arg);
+        } else if op.size == 2 {
+            let arg = self.mmu.read_byte(self.regs.pc);
+            println!("CB OP: {:#04X} {:20}   {:#04X}", op_code, op.mneumonic, arg);
+        } else {
+            println!("CB OP: {:#04X} {:20}", op_code, op.mneumonic);
+        }
+
         let op_impl = op.execute;
 
         let ticks = op_impl(self);
