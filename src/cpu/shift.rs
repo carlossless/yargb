@@ -1,6 +1,39 @@
 use cpu::CPU;
 use registers::Flag::{C, H, N, Z};
 
+macro_rules! rotate_left_carry {
+    ($source_register:ident) => {
+        |cpu: &mut CPU| {
+            let x = cpu.regs.$source_register;
+            let r = cpu.rotate_left_carry(x);
+            cpu.regs.$source_register = r;
+            2
+        }
+    };
+}
+
+macro_rules! rotate_right_carry {
+    ($source_register:ident) => {
+        |cpu: &mut CPU| {
+            let x = cpu.regs.$source_register;
+            let r = cpu.rotate_right_carry(x);
+            cpu.regs.$source_register = r;
+            2
+        }
+    };
+}
+
+macro_rules! rotate_left {
+    ($source_register:ident) => {
+        |cpu: &mut CPU| {
+            let x = cpu.regs.$source_register;
+            let r = cpu.rotate_left(x);
+            cpu.regs.$source_register = r;
+            2
+        }
+    };
+}
+
 macro_rules! rotate_right {
     ($source_register:ident) => {
         |cpu: &mut CPU| {
@@ -56,15 +89,6 @@ impl CPU {
         1
     }
 
-    pub fn rotate_right(&mut self, value: u8) -> u8 {
-        let r = value.rotate_right(1);
-        self.regs.set_flag(Z, r == 0);
-        self.regs.set_flag(N, false);
-        self.regs.set_flag(H, false);
-        self.regs.set_flag(C, (value & 0x01) != 0);
-        r
-    }
-
     pub fn rotate_right_circular_accumulator(&mut self) -> usize {
         let a = self.regs.a;
         self.regs.set_flag(Z, false);
@@ -102,6 +126,44 @@ impl CPU {
         self.regs.set_flag(N, false);
         self.regs.set_flag(H, false);
         self.regs.set_flag(C, false);
+        r
+    }
+
+    pub fn rotate_left_carry(&mut self, value: u8) -> u8 {
+        let c = value & (1 << 7) != 0;
+        let r = value.rotate_left(1);
+        self.regs.set_flag(Z, r == 0);
+        self.regs.set_flag(N, false);
+        self.regs.set_flag(H, false);
+        self.regs.set_flag(C, c);
+        r
+    }
+
+    pub fn rotate_right_carry(&mut self, value: u8) -> u8 {
+        let c = value & (1 << 0) != 0;
+        let r = value.rotate_right(1);
+        self.regs.set_flag(Z, r == 0);
+        self.regs.set_flag(N, false);
+        self.regs.set_flag(H, false);
+        self.regs.set_flag(C, c);
+        r
+    }
+
+    pub fn rotate_left(&mut self, value: u8) -> u8 {
+        let r = value.rotate_left(1);
+        self.regs.set_flag(Z, r == 0);
+        self.regs.set_flag(N, false);
+        self.regs.set_flag(H, false);
+        self.regs.set_flag(C, (value & 0x80) != 0);
+        r
+    }
+
+    pub fn rotate_right(&mut self, value: u8) -> u8 {
+        let r = value.rotate_right(1);
+        self.regs.set_flag(Z, r == 0);
+        self.regs.set_flag(N, false);
+        self.regs.set_flag(H, false);
+        self.regs.set_flag(C, (value & 0x01) != 0);
         r
     }
 }
