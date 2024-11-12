@@ -1,7 +1,7 @@
 use cpu::CPU;
 use registers::Flag::{C, H, N, Z};
 
-macro_rules! rotate_left_carry {
+macro_rules! rlc {
     ($source_register:ident) => {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
@@ -12,7 +12,7 @@ macro_rules! rotate_left_carry {
     };
 }
 
-macro_rules! rotate_right_carry {
+macro_rules! rrc {
     ($source_register:ident) => {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
@@ -23,7 +23,7 @@ macro_rules! rotate_right_carry {
     };
 }
 
-macro_rules! rotate_left {
+macro_rules! rl {
     ($source_register:ident) => {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
@@ -34,7 +34,7 @@ macro_rules! rotate_left {
     };
 }
 
-macro_rules! rotate_right {
+macro_rules! rr {
     ($source_register:ident) => {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
@@ -45,7 +45,7 @@ macro_rules! rotate_right {
     };
 }
 
-macro_rules! shift_right_logical {
+macro_rules! srl {
     ($source_register:ident) => {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
@@ -61,6 +61,28 @@ macro_rules! swap {
         |cpu: &mut CPU| {
             let x = cpu.regs.$source_register;
             let r = cpu.swap(x);
+            cpu.regs.$source_register = r;
+            2
+        }
+    };
+}
+
+macro_rules! sla {
+    ($source_register:ident) => {
+        |cpu: &mut CPU| {
+            let x = cpu.regs.$source_register;
+            let r = cpu.sla(x);
+            cpu.regs.$source_register = r;
+            2
+        }
+    };
+}
+
+macro_rules! sra {
+    ($source_register:ident) => {
+        |cpu: &mut CPU| {
+            let x = cpu.regs.$source_register;
+            let r = cpu.sra(x);
             cpu.regs.$source_register = r;
             2
         }
@@ -164,6 +186,26 @@ impl CPU {
         self.regs.set_flag(N, false);
         self.regs.set_flag(H, false);
         self.regs.set_flag(C, (value & 0x01) != 0);
+        r
+    }
+
+    pub fn sla(&mut self, value: u8) -> u8 {
+        let c = value & 0x80 != 0;
+        let r = value << 1;
+        self.regs.set_flag(Z, r == 0);
+        self.regs.set_flag(N, false);
+        self.regs.set_flag(H, false);
+        self.regs.set_flag(C, c);
+        r
+    }
+
+    pub fn sra(&mut self, value: u8) -> u8 {
+        let c = value & 0x01 != 0;
+        let r = (value & 0x80) | (value >> 1);
+        self.regs.set_flag(Z, r == 0);
+        self.regs.set_flag(N, false);
+        self.regs.set_flag(H, false);
+        self.regs.set_flag(C, c);
         r
     }
 }
