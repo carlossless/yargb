@@ -860,12 +860,29 @@ impl CPU {
         let op = &CPU::OPS[op_code as usize];
         if op.size == 3 {
             let arg = self.mmu.read_word(self.regs.pc);
-            println!("OP: {:#04X} {:20} {:#06X} {:}", op_code, op.mneumonic, arg, regs.one_line_rep());
+            println!(
+                "OP: {:#04X} {:20} {:#06X} {:}",
+                op_code,
+                op.mneumonic,
+                arg,
+                regs.one_line_rep()
+            );
         } else if op.size == 2 {
             let arg = self.mmu.read_byte(self.regs.pc);
-            println!("OP: {:#04X} {:20}   {:#04X} {:}", op_code, op.mneumonic, arg, regs.one_line_rep());
+            println!(
+                "OP: {:#04X} {:20}   {:#04X} {:}",
+                op_code,
+                op.mneumonic,
+                arg,
+                regs.one_line_rep()
+            );
         } else {
-            println!("OP: {:#04X} {:20}        {:}", op_code, op.mneumonic, regs.one_line_rep());
+            println!(
+                "OP: {:#04X} {:20}        {:}",
+                op_code,
+                op.mneumonic,
+                regs.one_line_rep()
+            );
         }
         let op_impl = op.execute;
 

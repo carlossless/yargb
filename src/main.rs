@@ -22,7 +22,9 @@ fn main() {
     let mut rom_file = File::open("roms/cpu_instrs.gb").expect("failed to open rom file");
     let mut rom_data = vec![0; 0];
 
-    rom_file.read_to_end(&mut rom_data).expect("failed to read rom file");;
+    rom_file
+        .read_to_end(&mut rom_data)
+        .expect("failed to read rom file");
 
     let mut cpu = CPU::new(&rom_data);
 

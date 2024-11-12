@@ -3,9 +3,7 @@ use registers::Flag::{C, Z};
 
 macro_rules! stack_rst {
     ($addr:expr) => {
-        |cpu: &mut CPU| {
-            cpu.stack_rst($addr)
-        }
+        |cpu: &mut CPU| cpu.stack_rst($addr)
     };
 }
 

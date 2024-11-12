@@ -15,6 +15,9 @@ impl MBC for NULLMBC {
         self.rom[addr as usize]
     }
     fn write_rom(&mut self, addr: u16, _value: u8) {
-        panic!("Attempted to write to read-only memory at address {:#06X}", addr);
+        panic!(
+            "Attempted to write to read-only memory at address {:#06X}",
+            addr
+        );
     }
 }

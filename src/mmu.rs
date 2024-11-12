@@ -21,8 +21,10 @@ pub struct MMU {
 
 impl MMU {
     pub fn new(rom_data: &Vec<u8>) -> MMU {
-
-        let title = rom_data[0x134..0x143].iter().map(|&c| c as char).collect::<String>();
+        let title = rom_data[0x134..0x143]
+            .iter()
+            .map(|&c| c as char)
+            .collect::<String>();
         let manufacturer_code = rom_data[0x13F..0x143].to_owned();
         let cgb_flag = rom_data[0x143];
         let licensee_code_new = rom_data[0x144..0x146].to_owned();
@@ -34,7 +36,10 @@ impl MMU {
         let licensee_code_old = rom_data[0x14B];
         let mask_rom_version = rom_data[0x14C];
         let header_checksum = rom_data[0x14D];
-        let global_checksum = rom_data[0x14E..0x150].iter().map(|&c| c as u16).sum::<u16>();
+        let global_checksum = rom_data[0x14E..0x150]
+            .iter()
+            .map(|&c| c as u16)
+            .sum::<u16>();
 
         // print!("Title: {}\nManufacturer Code: {:?}\n CGB Flag: {:02x}\n Licensee Code (new): {:?}\n SGB Flag: {:02x}\n Cartridge Type: {:02x}\n ROM Size: {:02x}\n RAM Size: {:02x}\n Destination Code: {:02x}\n Licensee Code (old): {:02x}\n Mask ROM Version: {:02x}\n Header Checksum: {:02x}\n Global Checksum: {:?}\n", title, manufacturer_code, cgb_flag, licensee_code_new, sgb_flag, cartridge_type, rom_size, ram_size, destination_code, licensee_code_old, mask_rom_version, header_checksum, global_checksum);
 

@@ -10,7 +10,7 @@ pub struct Registers {
     f: u8,
     pub sp: u16,
     pub pc: u16,
-    
+
     pub ime: bool,
 }
 
