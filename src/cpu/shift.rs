@@ -12,6 +12,18 @@ macro_rules! rlc {
     };
 }
 
+macro_rules! rlc_hl {
+    () => {
+        |cpu: &mut CPU| {
+            let addr = cpu.regs.get_hl();
+            let x = cpu.mmu.read_byte(addr);
+            let r = cpu.rotate_left_carry(x);
+            cpu.mmu.write_byte(addr, r);
+            4
+        }
+    };
+}
+
 macro_rules! rrc {
     ($source_register:ident) => {
         |cpu: &mut CPU| {
@@ -19,6 +31,18 @@ macro_rules! rrc {
             let r = cpu.rotate_right_carry(x);
             cpu.regs.$source_register = r;
             2
+        }
+    };
+}
+
+macro_rules! rrc_hl {
+    () => {
+        |cpu: &mut CPU| {
+            let addr = cpu.regs.get_hl();
+            let x = cpu.mmu.read_byte(addr);
+            let r = cpu.rotate_right_carry(x);
+            cpu.mmu.write_byte(addr, r);
+            4
         }
     };
 }
@@ -34,6 +58,18 @@ macro_rules! rl {
     };
 }
 
+macro_rules! rl_hl {
+    () => {
+        |cpu: &mut CPU| {
+            let addr = cpu.regs.get_hl();
+            let x = cpu.mmu.read_byte(addr);
+            let r = cpu.rotate_left(x);
+            cpu.mmu.write_byte(addr, r);
+            4
+        }
+    };
+}
+
 macro_rules! rr {
     ($source_register:ident) => {
         |cpu: &mut CPU| {
@@ -41,6 +77,18 @@ macro_rules! rr {
             let r = cpu.rotate_right(x);
             cpu.regs.$source_register = r;
             2
+        }
+    };
+}
+
+macro_rules! rr_hl {
+    () => {
+        |cpu: &mut CPU| {
+            let addr = cpu.regs.get_hl();
+            let x = cpu.mmu.read_byte(addr);
+            let r = cpu.rotate_right(x);
+            cpu.mmu.write_byte(addr, r);
+            4
         }
     };
 }
@@ -56,6 +104,18 @@ macro_rules! srl {
     };
 }
 
+macro_rules! srl_hl {
+    () => {
+        |cpu: &mut CPU| {
+            let addr = cpu.regs.get_hl();
+            let x = cpu.mmu.read_byte(addr);
+            let r = cpu.shift_right_logical(x);
+            cpu.mmu.write_byte(addr, r);
+            4
+        }
+    };
+}
+
 macro_rules! swap {
     ($source_register:ident) => {
         |cpu: &mut CPU| {
@@ -63,6 +123,18 @@ macro_rules! swap {
             let r = cpu.swap(x);
             cpu.regs.$source_register = r;
             2
+        }
+    };
+}
+
+macro_rules! swap_hl {
+    () => {
+        |cpu: &mut CPU| {
+            let addr = cpu.regs.get_hl();
+            let x = cpu.mmu.read_byte(addr);
+            let r = cpu.swap(x);
+            cpu.mmu.write_byte(addr, r);
+            4
         }
     };
 }
@@ -78,6 +150,18 @@ macro_rules! sla {
     };
 }
 
+macro_rules! sla_hl {
+    () => {
+        |cpu: &mut CPU| {
+            let addr = cpu.regs.get_hl();
+            let x = cpu.mmu.read_byte(addr);
+            let r = cpu.sla(x);
+            cpu.mmu.write_byte(addr, r);
+            4
+        }
+    };
+}
+
 macro_rules! sra {
     ($source_register:ident) => {
         |cpu: &mut CPU| {
@@ -85,6 +169,89 @@ macro_rules! sra {
             let r = cpu.sra(x);
             cpu.regs.$source_register = r;
             2
+        }
+    };
+}
+
+macro_rules! sra_hl {
+    () => {
+        |cpu: &mut CPU| {
+            let addr = cpu.regs.get_hl();
+            let x = cpu.mmu.read_byte(addr);
+            let r = cpu.sra(x);
+            cpu.mmu.write_byte(addr, r);
+            4
+        }
+    };
+}
+
+macro_rules! bit {
+    ($i:expr,$source_register:ident) => {
+        |cpu: &mut CPU| {
+            use registers::Flag::{H, N, Z};
+            let x = cpu.regs.$source_register;
+            cpu.regs.set_flag(Z, (x & (1 << $i)) == 0);
+            cpu.regs.set_flag(N, false);
+            cpu.regs.set_flag(H, true);
+            2
+        }
+    };
+}
+
+macro_rules! bit_hl {
+    ($i:expr) => {
+        |cpu: &mut CPU| {
+            use registers::Flag::{H, N, Z};
+            let addr = cpu.regs.get_hl();
+            let x = cpu.mmu.read_byte(addr);
+            cpu.regs.set_flag(Z, (x & (1 << $i)) == 0);
+            cpu.regs.set_flag(N, false);
+            cpu.regs.set_flag(H, true);
+            4
+        }
+    };
+}
+
+macro_rules! res {
+    ($i:expr,$source_register:ident) => {
+        |cpu: &mut CPU| {
+            let x = cpu.regs.$source_register;
+            let r = x & !(1 << $i);
+            cpu.regs.$source_register = r;
+            2
+        }
+    };
+}
+
+macro_rules! res_hl {
+    ($i:expr) => {
+        |cpu: &mut CPU| {
+            let addr = cpu.regs.get_hl();
+            let x = cpu.mmu.read_byte(addr);
+            cpu.mmu.write_byte(addr, x & !(1 << $i));
+            4
+        }
+    };
+}
+
+macro_rules! set {
+    ($i:expr,$source_register:ident) => {
+        |cpu: &mut CPU| {
+            let x = cpu.regs.$source_register;
+            let r = x | (1 << $i);
+            cpu.regs.$source_register = r;
+            2
+        }
+    };
+}
+
+macro_rules! set_hl {
+    ($i:expr) => {
+        |cpu: &mut CPU| {
+            let addr = cpu.regs.get_hl();
+            let x = cpu.mmu.read_byte(addr);
+            cpu.mmu.write_byte(addr, x | (1 << $i));
+            4
         }
     };
 }
