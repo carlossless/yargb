@@ -151,7 +151,7 @@ impl CPU {
         dop!("INC H", &alu_inc_byte!(h)), // 0x24 INC H
         dop!("DEC H", &alu_dec_byte!(h)), // 0x25 DEC H
         dop!("LD H,{:#04X}", u8, &load!(h)), // 0x26 LD H,d8
-        dop!("DAA", &CPU::alu_decimal_adjust_accumulator), // 0x27 DAA
+        dop!("DAA", &CPU::daa), // 0x27 DAA
         dop!("JR Z,{:#04X}", i8, &CPU::relative_jump_z), // 0x28 JR Z,r8
         dop!("ADD HL,HL", &|cpu: &mut CPU| {
             let v = cpu.regs.get_hl();

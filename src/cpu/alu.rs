@@ -1,3 +1,5 @@
+use std::result;
+
 use cpu::CPU;
 use registers::Flag::{C, H, N, Z};
 
@@ -272,77 +274,36 @@ impl CPU {
         self.alu_sub_byte(lhs, rhs);
     }
 
-    // TODO: using match here is unnecessary... can be done more concisely by mutating through conditions
-    pub fn alu_decimal_adjust_accumulator(&mut self) -> usize {
+    pub fn daa(&mut self) -> usize {
         let n = self.regs.get_flag(N);
         let h = self.regs.get_flag(H);
         let mut c = self.regs.get_flag(C);
-        let mut a = self.regs.a;
-        let upper_digit = a >> 4;
-        let lower_digit = a & 0xF;
-        c = if n {
-            match (c, h, upper_digit, lower_digit) {
-                (false, false, 0x0..=0x9, 0x0..=0x9) => false,
-                (false, false, 0x0..=0x8, 0xA..=0xF) => {
-                    a = a.wrapping_add(0x06);
-                    false
-                }
-                (false, true, 0x0..=0x9, 0x0..=0x3) => {
-                    a = a.wrapping_add(0x06);
-                    false
-                }
-                (false, false, 0xA..=0xF, 0x0..=0x9) => {
-                    a = a.wrapping_add(0x60);
-                    true
-                }
-                (false, false, 0x9..=0xF, 0xA..=0xF) => {
-                    a = a.wrapping_add(0x66);
-                    true
-                }
-                (false, true, 0xA..=0xF, 0x0..=0x3) => {
-                    a = a.wrapping_add(0x66);
-                    true
-                }
-                (true, false, 0x0..=0x2, 0x0..=0x9) => {
-                    a = a.wrapping_add(0x60);
-                    true
-                }
-                (true, false, 0x0..=0x2, 0xA..=0xF) => {
-                    a = a.wrapping_add(0x66);
-                    true
-                }
-                (true, true, 0x0..=0x3, 0x0..=0x3) => {
-                    a = a.wrapping_add(0x66);
-                    true
-                }
-                _ => {
-                    panic!("DAA should never reach this case")
-                }
+        let mut work = self.regs.a as u16;
+
+        if n {
+            if h {
+                work = work.wrapping_sub(0x06) & 0xff;
+            }
+            if c {
+                work = work.wrapping_sub(0x60);
             }
         } else {
-            match (c, h, upper_digit, lower_digit) {
-                (false, false, 0x0..=0x9, 0x0..=0x9) => false,
-                (false, true, 0x0..=0x8, 0x6..=0xF) => {
-                    a = a.wrapping_add(0xFA);
-                    false
-                }
-                (false, false, 0x9..=0xF, 0xA..=0xF) => {
-                    a = a.wrapping_add(0xA0);
-                    true
-                }
-                (true, true, 0xA..=0xF, 0x0..=0x3) => {
-                    a = a.wrapping_add(0x9A);
-                    true
-                }
-                _ => {
-                    panic!("DAA should never reach this case")
-                }
+            if h || (work & 0x0F) > 9 {
+                work = work.wrapping_add(0x06);
             }
-        };
-        self.regs.set_flag(Z, a == 0);
+            if c || work > 0x9F {
+                work = work.wrapping_add(0x60);
+            }
+        }
+
+        if (work & 0x100) == 0x100 {
+            c = true;
+        }
+
+        self.regs.a = (work & 0xff) as u8;
+        self.regs.set_flag(Z, self.regs.a == 0);
         self.regs.set_flag(H, false);
         self.regs.set_flag(C, c);
-        self.regs.a = a;
         1
     }
 
