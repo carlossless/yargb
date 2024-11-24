@@ -92,8 +92,11 @@ impl CPU {
     }
 
     pub fn stack_pop(&mut self) -> u16 {
-        let result = self.mmu.read_word(self.regs.sp);
-        self.regs.sp += 2;
+        let mut result = 0;
+        result |= self.mmu.read_byte(self.regs.sp) as u16;
+        self.regs.sp += 1;
+        result |= (self.mmu.read_byte(self.regs.sp) as u16) << 8;
+        self.regs.sp += 1;
         result
     }
 
@@ -122,7 +125,9 @@ impl CPU {
     }
 
     pub fn stack_push(&mut self, value: u16) {
-        self.regs.sp -= 2;
-        self.mmu.write_word(self.regs.sp, value);
+        self.regs.sp -= 1;
+        self.mmu.write_byte(self.regs.sp, ((value >> 8) & 0xff) as u8);
+        self.regs.sp -= 1;
+        self.mmu.write_byte(self.regs.sp, (value & 0xff) as u8);
     }
 }

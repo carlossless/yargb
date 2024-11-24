@@ -536,7 +536,7 @@ impl CPU {
         }),
         dop!("POP AF", &|cpu: &mut CPU| {
             let value = cpu.stack_pop();
-            cpu.regs.set_af(value);
+            cpu.regs.set_af(value & 0xFFF0); // make sure impossible flags are not set
             3
         }),
         dop!("LD A,(C)", &|cpu: &mut CPU| {
