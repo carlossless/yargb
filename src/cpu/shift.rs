@@ -339,7 +339,8 @@ impl CPU {
     }
 
     pub fn rotate_left(&mut self, value: u8) -> u8 {
-        let r = value.rotate_left(1);
+        let c = if self.regs.get_flag(C) { 1 } else { 0 };
+        let r = (value << 1) | c;
         self.regs.set_flag(Z, r == 0);
         self.regs.set_flag(N, false);
         self.regs.set_flag(H, false);
@@ -348,7 +349,8 @@ impl CPU {
     }
 
     pub fn rotate_right(&mut self, value: u8) -> u8 {
-        let r = value.rotate_right(1);
+        let c = if self.regs.get_flag(C) { 1 } else { 0 };
+        let r = c << 7 | (value >> 1);
         self.regs.set_flag(Z, r == 0);
         self.regs.set_flag(N, false);
         self.regs.set_flag(H, false);

@@ -277,33 +277,30 @@ impl CPU {
     pub fn daa(&mut self) -> usize {
         let n = self.regs.get_flag(N);
         let h = self.regs.get_flag(H);
-        let mut c = self.regs.get_flag(C);
-        let mut work = self.regs.a as u16;
+        let c = self.regs.get_flag(C);
+        let a_value = self.regs.a;
+        let mut offset = 0u8;
+        let mut should_carry = false;
 
-        if n {
-            if h {
-                work = work.wrapping_sub(0x06) & 0xff;
-            }
-            if c {
-                work = work.wrapping_sub(0x60);
-            }
+        if (!n && a_value & 0xF > 0x09) || h {
+            offset |= 0x06;
+        }
+
+        if (!n && a_value > 0x99) || c {
+            offset |= 0x60;
+            should_carry = true;
+        }
+
+        let output = if !n {
+            a_value.wrapping_add(offset)
         } else {
-            if h || (work & 0x0F) > 9 {
-                work = work.wrapping_add(0x06);
-            }
-            if c || work > 0x9F {
-                work = work.wrapping_add(0x60);
-            }
-        }
+            a_value.wrapping_sub(offset)
+        };
 
-        if (work & 0x100) == 0x100 {
-            c = true;
-        }
-
-        self.regs.a = (work & 0xff) as u8;
-        self.regs.set_flag(Z, self.regs.a == 0);
+        self.regs.a = output;
+        self.regs.set_flag(Z, output == 0);
         self.regs.set_flag(H, false);
-        self.regs.set_flag(C, c);
+        self.regs.set_flag(C, should_carry);
         1
     }
 

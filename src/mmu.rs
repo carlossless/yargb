@@ -133,6 +133,18 @@ impl MMU {
                 self.interupt_flags = value;
                 println!("write interupt_flags {:b}", value);
             }
+            0xFF11 => {
+                println!("write channel1 config {:b}", value);
+            }
+            0xFF12 => {
+                println!("write channel1 volume envelope {:b}", value);
+            }
+            0xFF13 => {
+                println!("write channel1 frequency low {:b}", value);
+            }
+            0xFF14 => {
+                println!("write channel1 frequency high {:b}", value);
+            }
             0xFF24 => {
                 self.channel_control = value;
                 println!("write channel_control {:b}", value);
