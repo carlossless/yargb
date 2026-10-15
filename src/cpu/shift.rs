@@ -16,9 +16,9 @@ macro_rules! rlc_hl {
     () => {
         |cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            let x = cpu.mmu.read_byte(addr);
+            let x = cpu.read(addr);
             let r = cpu.rotate_left_carry(x);
-            cpu.mmu.write_byte(addr, r);
+            cpu.write(addr, r);
             4
         }
     };
@@ -39,9 +39,9 @@ macro_rules! rrc_hl {
     () => {
         |cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            let x = cpu.mmu.read_byte(addr);
+            let x = cpu.read(addr);
             let r = cpu.rotate_right_carry(x);
-            cpu.mmu.write_byte(addr, r);
+            cpu.write(addr, r);
             4
         }
     };
@@ -62,9 +62,9 @@ macro_rules! rl_hl {
     () => {
         |cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            let x = cpu.mmu.read_byte(addr);
+            let x = cpu.read(addr);
             let r = cpu.rotate_left(x);
-            cpu.mmu.write_byte(addr, r);
+            cpu.write(addr, r);
             4
         }
     };
@@ -85,9 +85,9 @@ macro_rules! rr_hl {
     () => {
         |cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            let x = cpu.mmu.read_byte(addr);
+            let x = cpu.read(addr);
             let r = cpu.rotate_right(x);
-            cpu.mmu.write_byte(addr, r);
+            cpu.write(addr, r);
             4
         }
     };
@@ -108,9 +108,9 @@ macro_rules! srl_hl {
     () => {
         |cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            let x = cpu.mmu.read_byte(addr);
+            let x = cpu.read(addr);
             let r = cpu.shift_right_logical(x);
-            cpu.mmu.write_byte(addr, r);
+            cpu.write(addr, r);
             4
         }
     };
@@ -131,9 +131,9 @@ macro_rules! swap_hl {
     () => {
         |cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            let x = cpu.mmu.read_byte(addr);
+            let x = cpu.read(addr);
             let r = cpu.swap(x);
-            cpu.mmu.write_byte(addr, r);
+            cpu.write(addr, r);
             4
         }
     };
@@ -154,9 +154,9 @@ macro_rules! sla_hl {
     () => {
         |cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            let x = cpu.mmu.read_byte(addr);
+            let x = cpu.read(addr);
             let r = cpu.sla(x);
-            cpu.mmu.write_byte(addr, r);
+            cpu.write(addr, r);
             4
         }
     };
@@ -177,9 +177,9 @@ macro_rules! sra_hl {
     () => {
         |cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            let x = cpu.mmu.read_byte(addr);
+            let x = cpu.read(addr);
             let r = cpu.sra(x);
-            cpu.mmu.write_byte(addr, r);
+            cpu.write(addr, r);
             4
         }
     };
@@ -203,7 +203,7 @@ macro_rules! bit_hl {
         |cpu: &mut CPU| {
             use crate::registers::Flag::{H, N, Z};
             let addr = cpu.regs.get_hl();
-            let x = cpu.mmu.read_byte(addr);
+            let x = cpu.read(addr);
             cpu.regs.set_flag(Z, (x & (1 << $i)) == 0);
             cpu.regs.set_flag(N, false);
             cpu.regs.set_flag(H, true);
@@ -227,8 +227,8 @@ macro_rules! res_hl {
     ($i:expr) => {
         |cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            let x = cpu.mmu.read_byte(addr);
-            cpu.mmu.write_byte(addr, x & !(1 << $i));
+            let x = cpu.read(addr);
+            cpu.write(addr, x & !(1 << $i));
             4
         }
     };
@@ -249,8 +249,8 @@ macro_rules! set_hl {
     ($i:expr) => {
         |cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            let x = cpu.mmu.read_byte(addr);
-            cpu.mmu.write_byte(addr, x | (1 << $i));
+            let x = cpu.read(addr);
+            cpu.write(addr, x | (1 << $i));
             4
         }
     };

@@ -7,7 +7,9 @@ const TIMER_INTERRUPT: u8 = 1 << 2;
 const SERIAL_INTERRUPT: u8 = 1 << 3;
 const JOYPAD_INTERRUPT: u8 = 1 << 4;
 
-const SERIAL_TRANSFER_CYCLES: u32 = 4096;
+const SERIAL_CLOCK_PERIOD: usize = 512;
+/// The serial bit clock leads the DIV counter by one M-cycle.
+const SERIAL_CLOCK_PHASE: usize = 4;
 const FRAME_SEQUENCER_PERIOD: usize = 8192;
 
 pub fn is_io(addr: u16) -> bool {
@@ -44,12 +46,20 @@ pub struct MMU {
     buttons: u8,
     serial_data: u8,
     serial_control: u8,
-    serial_cycles: u32,
+    serial_bits: u8,
     serial_output: bool,
     dma_source: u8,
+    dma: Option<Dma>,
+    dma_requested: Option<(u16, bool)>,
     exit_request: bool,
     pub(crate) code_refs: [u8; 0x10000],
     dirty_code: Vec<u16>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct Dma {
+    source: u16,
+    index: u16,
 }
 
 impl MMU {
@@ -63,13 +73,15 @@ impl MMU {
             timer: Timer::new(),
             interupt_flags: 0x01,
             interupt_enable: 0x00,
-            joypad_select: 0x30,
+            joypad_select: 0x00,
             buttons: 0,
             serial_data: 0,
             serial_control: 0,
-            serial_cycles: 0,
+            serial_bits: 0,
             serial_output: false,
             dma_source: 0xFF,
+            dma: None,
+            dma_requested: None,
             exit_request: false,
             code_refs: [0; 0x10000],
             dirty_code: Vec::new(),
@@ -157,32 +169,31 @@ impl MMU {
                     if self.serial_output {
                         eprint!("{}", self.serial_data as char);
                     }
-                    self.serial_cycles = SERIAL_TRANSFER_CYCLES;
+                    self.serial_bits = 8;
                 }
             }
             0xFF04 => {
-                let frame_sequencer_edge = self.timer.counter() & 0x1000 != 0;
-                if self.timer.write_byte(addr, value) {
-                    self.interupt_flags |= TIMER_INTERRUPT;
-                }
-                if frame_sequencer_edge {
+                let counter = self.timer.counter();
+                self.timer.write_byte(addr, value);
+                if counter & 0x1000 != 0 {
                     self.apu.step_frame_sequencer();
                 }
-            }
-            0xFF05..=0xFF07 => {
-                if self.timer.write_byte(addr, value) {
-                    self.interupt_flags |= TIMER_INTERRUPT;
+                if (counter as usize + SERIAL_CLOCK_PHASE) & 0x0100 != 0 {
+                    self.clock_serial(1);
                 }
             }
+            0xFF05..=0xFF07 => self.timer.write_byte(addr, value),
             0xFF0F => self.interupt_flags = value & 0x1F,
             0xFF10..=0xFF3F => self.apu.write(addr, value),
             0xFF46 => {
                 self.dma_source = value;
                 let source = (value as u16) << 8;
-                for index in 0..0xA0 {
-                    let byte = self.read_byte(source + index);
-                    self.ppu.write_oam_index(index as usize, byte);
-                }
+                let source = if source >= 0xE000 {
+                    source - 0x2000
+                } else {
+                    source
+                };
+                self.dma_requested = Some((source, false));
             }
             0xFF40..=0xFF4B => self.interupt_flags |= self.ppu.write_register(addr, value),
             0xFF80..=0xFFFE => self.high_ram[addr as usize - 0xFF80] = value,
@@ -223,6 +234,7 @@ impl MMU {
             && self.work_ram == other.work_ram
             && self.high_ram == other.high_ram
             && self.timer == other.timer
+            && (self.dma, self.dma_requested) == (other.dma, other.dma_requested)
             && (
                 self.interupt_flags,
                 self.interupt_enable,
@@ -237,19 +249,90 @@ impl MMU {
             && (
                 self.serial_data,
                 self.serial_control,
-                self.serial_cycles,
+                self.serial_bits,
                 self.dma_source,
             ) == (
                 other.serial_data,
                 other.serial_control,
-                other.serial_cycles,
+                other.serial_bits,
                 other.dma_source,
             )
     }
 
-    pub fn tick(&mut self, m_cycles: usize) {
+    pub fn dma_active(&self) -> bool {
+        self.dma.is_some() || self.dma_requested.is_some()
+    }
+
+    fn bus_blocked(&self, addr: u16) -> bool {
+        let Some(dma) = self.dma else {
+            return false;
+        };
+        let video_bus = |addr: u16| (0x8000..=0x9FFF).contains(&addr);
+        match addr {
+            0xFE00..=0xFEFF => true,
+            0xFF00..=0xFFFF => false,
+            _ => video_bus(addr) == video_bus(dma.source),
+        }
+    }
+
+    pub fn cpu_read(&self, addr: u16) -> u8 {
+        if self.bus_blocked(addr) {
+            return 0xFF;
+        }
+        self.read_byte(addr)
+    }
+
+    pub fn cpu_write(&mut self, addr: u16, value: u8) {
+        if self.bus_blocked(addr) {
+            return;
+        }
+        self.write_byte(addr, value);
+    }
+
+    fn copy_dma_byte(&mut self) {
+        if let Some(dma) = &mut self.dma {
+            let (source, index) = (dma.source, dma.index);
+            if index == 0xA0 {
+                self.dma = None;
+                return;
+            }
+            dma.index += 1;
+            let byte = self.read_byte(source + index);
+            self.ppu.write_oam_index(index as usize, byte);
+        }
+    }
+
+    fn step_dma(&mut self) {
+        match self.dma_requested {
+            Some((source, true)) => {
+                self.dma_requested = None;
+                self.dma = Some(Dma { source, index: 0 });
+            }
+            Some((source, false)) => {
+                self.dma_requested = Some((source, true));
+                self.copy_dma_byte();
+                return;
+            }
+            None => {}
+        }
+        self.copy_dma_byte();
+    }
+
+    pub fn tick(&mut self, mut m_cycles: usize) {
+        while m_cycles > 0 && self.dma_active() {
+            self.step_dma();
+            self.tick_components(1);
+            m_cycles -= 1;
+        }
+        if m_cycles > 0 {
+            self.tick_components(m_cycles);
+        }
+    }
+
+    fn tick_components(&mut self, m_cycles: usize) {
         let t_cycles = m_cycles * 4;
-        let mut counter = self.timer.counter() as usize;
+        let start = self.timer.cycle_counter() as usize;
+        let mut counter = start;
         if self.timer.tick(m_cycles) {
             self.interupt_flags |= TIMER_INTERRUPT;
         }
@@ -265,13 +348,20 @@ impl MMU {
             }
         }
         self.cartridge.tick(t_cycles);
-        if self.serial_cycles > 0 {
-            self.serial_cycles = self.serial_cycles.saturating_sub(t_cycles as u32);
-            if self.serial_cycles == 0 {
-                self.serial_data = 0xFF;
-                self.serial_control &= 0x7F;
-                self.interupt_flags |= SERIAL_INTERRUPT;
-            }
+        let serial = start + SERIAL_CLOCK_PHASE;
+        let edges = (serial + t_cycles) / SERIAL_CLOCK_PERIOD - serial / SERIAL_CLOCK_PERIOD;
+        self.clock_serial(edges);
+    }
+
+    fn clock_serial(&mut self, edges: usize) {
+        if self.serial_bits == 0 || edges == 0 {
+            return;
+        }
+        self.serial_bits = self.serial_bits.saturating_sub(edges.min(8) as u8);
+        if self.serial_bits == 0 {
+            self.serial_data = 0xFF;
+            self.serial_control &= 0x7F;
+            self.interupt_flags |= SERIAL_INTERRUPT;
         }
     }
 
@@ -283,8 +373,11 @@ impl MMU {
         if enabled & TIMER_INTERRUPT != 0 {
             m_cycles = m_cycles.min(self.timer.m_cycles_until_overflow());
         }
-        if enabled & SERIAL_INTERRUPT != 0 && self.serial_cycles > 0 {
-            m_cycles = m_cycles.min((self.serial_cycles as usize).div_ceil(4));
+        if enabled & SERIAL_INTERRUPT != 0 && self.serial_bits > 0 {
+            let counter = self.timer.cycle_counter() as usize + SERIAL_CLOCK_PHASE;
+            let t_cycles = SERIAL_CLOCK_PERIOD - counter % SERIAL_CLOCK_PERIOD
+                + (self.serial_bits as usize - 1) * SERIAL_CLOCK_PERIOD;
+            m_cycles = m_cycles.min(t_cycles.div_ceil(4));
         }
         m_cycles
     }

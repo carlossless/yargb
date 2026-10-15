@@ -11,7 +11,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Module, default_libcall_names};
 
-use crate::cpu::CPU;
+use crate::cpu::{CPU, lands_before_tick};
 use crate::mmu::{MMU, is_io, needs_sync_on_write};
 use crate::registers::Registers;
 
@@ -103,9 +103,9 @@ impl Jit {
             let instructions = (result >> 32) as usize;
             if instructions > 0 {
                 let ticks = result as u32;
-                let unsynced = (ticks - cpu.jit_synced) as usize;
+                cpu.mmu.tick((ticks - cpu.jit_synced) as usize);
                 return Step {
-                    ticks: cpu.jit_synced as usize + cpu.retire(unsynced),
+                    ticks: cpu.retire(ticks as usize),
                     instructions,
                 };
             }
@@ -120,7 +120,13 @@ impl Jit {
         for addr in cpu.mmu.take_dirty_code() {
             self.invalidate(&mut cpu.mmu, addr as usize);
         }
-        if cpu.trace || cpu.halted || cpu.halt_bug || cpu.ime_delay > 0 {
+        if cpu.trace
+            || cpu.halted
+            || cpu.halt_bug
+            || cpu.locked
+            || cpu.ime_delay > 0
+            || cpu.mmu.dma_active()
+        {
             return None;
         }
         let pc = cpu.regs.pc;
@@ -320,16 +326,19 @@ extern "C" fn jit_read(cpu: *mut CPU, addr: u32) -> u32 {
     if is_io(addr) {
         cpu.sync_jit_hardware();
     }
-    cpu.mmu.read_byte(addr) as u32
+    cpu.mmu.cpu_read(addr) as u32
 }
 
 extern "C" fn jit_write(cpu: *mut CPU, addr: u32, value: u32) -> u32 {
     let cpu = unsafe { &mut *cpu };
     let addr = addr as u16;
+    if lands_before_tick(addr) {
+        cpu.jit_ticks -= 1;
+    }
     if needs_sync_on_write(addr) {
         cpu.sync_jit_hardware();
     }
-    cpu.mmu.write_byte(addr, value as u8);
+    cpu.mmu.cpu_write(addr, value as u8);
     cpu.mmu.take_exit_request() as u32
 }
 
@@ -337,7 +346,8 @@ extern "C" fn jit_interpret(cpu: *mut CPU) -> u32 {
     let cpu = unsafe { &mut *cpu };
     cpu.sync_jit_hardware();
     let ticks = cpu.process() as u32;
-    let exit = cpu.mmu.take_exit_request() || cpu.halted;
+    cpu.jit_synced += ticks;
+    let exit = cpu.mmu.take_exit_request() || cpu.halted || cpu.locked || cpu.mmu.dma_active();
     ticks | (exit as u32) << 16
 }
 
@@ -389,6 +399,7 @@ struct Emitter<'a> {
     budget: Value,
     exit: Block,
     exit_request: Option<Value>,
+    cycle: i64,
     read_sig: SigRef,
     write_sig: SigRef,
     interpret_sig: SigRef,
@@ -428,6 +439,7 @@ impl<'a> Emitter<'a> {
             budget,
             exit,
             exit_request: None,
+            cycle: 0,
             read_sig,
             write_sig,
             interpret_sig,
@@ -453,6 +465,7 @@ impl<'a> Emitter<'a> {
         self.b.switch_to_block(body);
 
         for (index, inst) in (1..).zip(&instructions) {
+            self.cycle = inst.next.wrapping_sub(inst.pc) as i64;
             let flow = self.instruction(inst.op, inst.pc, inst.next, index, inst.imm8, inst.imm16);
             if let Flow::Exit = flow {
                 break;
@@ -582,6 +595,7 @@ impl<'a> Emitter<'a> {
 
     fn store_ticks(&mut self) {
         let ticks = self.b.use_var(self.ticks);
+        let ticks = self.b.ins().iadd_imm_s(ticks, self.cycle);
         self.b.ins().store(
             MemFlagsData::trusted(),
             ticks,
@@ -630,7 +644,12 @@ impl<'a> Emitter<'a> {
         })
     }
 
+    fn internal(&mut self) {
+        self.cycle += 1;
+    }
+
     fn read(&mut self, addr: Value) -> Value {
+        self.cycle += 1;
         let done = self.b.create_block();
         self.b.append_block_param(done, types::I32);
         for (inside, index, offset) in self.ram_regions(addr) {
@@ -653,6 +672,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn write(&mut self, addr: Value, value: Value) {
+        self.cycle += 1;
         let done = self.b.create_block();
         self.b.append_block_param(done, types::I32);
         let slow = self.b.create_block();
@@ -708,6 +728,7 @@ impl<'a> Emitter<'a> {
         self.b
             .ins()
             .istore16(MemFlagsData::trusted(), pc, self.cpu, pc_offset());
+        self.cycle = 0;
         self.store_ticks();
         let result = self.call(self.interpret_sig, jit_interpret as *const () as usize, &[]);
         self.reload();
@@ -797,6 +818,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn push(&mut self, value: Value) {
+        self.internal();
         let hi = self.b.ins().ushr_imm_u(value, 8);
         let lo = self.b.ins().band_imm_u(value, 0xFF);
         for byte in [hi, lo] {
@@ -1172,6 +1194,7 @@ impl<'a> Emitter<'a> {
                 return Flow::Exit;
             }
             0xC0 | 0xC8 | 0xD0 | 0xD8 => {
+                self.internal();
                 let cond = self.condition(y);
                 let (taken, skipped) = (self.b.create_block(), self.b.create_block());
                 self.b.ins().brif(cond, taken, &[], skipped, &[]);
@@ -1411,7 +1434,9 @@ mod tests {
             }
             8 => code.extend([rng.pick(&[0xEA, 0xFA]), lo, hi]),
             _ => {
-                let port = rng.pick(&[0x80, 0x9F, 0xC0, 0xFE, 0x04, 0x05, 0x0F]);
+                let port = rng.pick(&[
+                    0x80, 0x9F, 0xC0, 0xFE, 0x04, 0x05, 0x06, 0x07, 0x01, 0x02, 0x0F,
+                ]);
                 code.extend([rng.pick(&[0xE0, 0xF0]), port]);
             }
         }

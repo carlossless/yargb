@@ -15,11 +15,19 @@ mod stack;
 #[macro_use]
 mod shift;
 
+/// Writes to TAC take effect before the timer counter advances in the same
+/// M-cycle, unlike other writes, which see the hardware after it.
+fn lands_before_tick(addr: u16) -> bool {
+    addr == 0xFF07
+}
+
 pub struct CPU {
     regs: Registers,
     mmu: MMU,
     pub halted: bool,
     halt_bug: bool,
+    locked: bool,
+    instruction_cycles: usize,
     pub trace: bool,
     ime_delay: u8,
     jit_ticks: u32,
@@ -87,7 +95,7 @@ impl CPU {
             3
         }), // 0x01 LD BC,d16
         dop!("LD (BC),A", &|cpu: &mut CPU| {
-            cpu.mmu.write_byte(cpu.regs.get_bc(), cpu.regs.a);
+            cpu.write(cpu.regs.get_bc(), cpu.regs.a);
             2
         }), // 0x02 LD (BC),A
         dop!("INC BC", &alu_inc_word!(BC)), // 0x03 INC BC
@@ -96,7 +104,7 @@ impl CPU {
         dop!("LD B,{:#04X}", u8, &load!(b)), // 0x06 LD B,d8
         dop!("RLCA", &CPU::rotate_left_circular_accumulator), // 0x07 RLCA
         dop!("LD ({:#06X}),SP", u16, &|cpu: &mut CPU, addr| {
-            cpu.mmu.write_word(addr, cpu.regs.sp);
+            cpu.write_word(addr, cpu.regs.sp);
             5
         }), // 0x08 LD (a16),SP
         dop!("ADD HL,BC", &|cpu: &mut CPU| {
@@ -106,7 +114,7 @@ impl CPU {
         }), // 0x09 ADD HL,BC
         dop!("LD A,(BC)", &|cpu: &mut CPU| {
             let a = cpu.regs.get_bc();
-            cpu.regs.a = cpu.mmu.read_byte(a);
+            cpu.regs.a = cpu.read(a);
             2
         }), // 0x0A LD A,(BC)
         dop!("DEC BC", &alu_dec_word!(BC)), // 0x0B DEC BC
@@ -120,7 +128,7 @@ impl CPU {
             3
         }), // 0x11 LD DE,d16
         dop!("LD (DE),A", &|cpu: &mut CPU| {
-            cpu.mmu.write_byte(cpu.regs.get_de(), cpu.regs.a);
+            cpu.write(cpu.regs.get_de(), cpu.regs.a);
             2
         }), // 0x12 LD (DE),A
         dop!("INC DE", &alu_inc_word!(DE)), // 0x13 INC DE
@@ -136,7 +144,7 @@ impl CPU {
         }), // 0x19 ADD HL,DE
         dop!("LD A,(DE)", &|cpu: &mut CPU| {
             let a = cpu.regs.get_de();
-            cpu.regs.a = cpu.mmu.read_byte(a);
+            cpu.regs.a = cpu.read(a);
             2
         }), // 0x1A LD A,(DE)
         dop!("DEC DE", &alu_dec_word!(DE)), // 0x1B DEC DE
@@ -151,7 +159,7 @@ impl CPU {
         }), // 0x21 LD HL,d16
         dop!("LD (HL+),A", &|cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            cpu.mmu.write_byte(addr, cpu.regs.a);
+            cpu.write(addr, cpu.regs.a);
             cpu.regs.set_hl(addr + 1);
             2
         }), // 0x22 LD (HL+),A
@@ -168,7 +176,7 @@ impl CPU {
         }), // 0x29 ADD HL,HL
         dop!("LD A,(HL+)", &|cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            cpu.regs.a = cpu.mmu.read_byte(addr);
+            cpu.regs.a = cpu.read(addr);
             cpu.regs.set_hl(addr + 1);
             2
         }), // 0x2A LD A,(HL+)
@@ -184,28 +192,28 @@ impl CPU {
         }), // 0x31 LD SP,d16
         dop!("LD (HL-),A", &|cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            cpu.mmu.write_byte(addr, cpu.regs.a);
+            cpu.write(addr, cpu.regs.a);
             cpu.regs.set_hl(addr - 1);
             2
         }), // 0x32 LD (HL-),A
         dop!("INC SP", &alu_inc_word!(SP)), // 0x33 INC SP
         dop!("INC (HL)", &|cpu: &mut CPU| {
             let a = cpu.regs.get_hl();
-            let mut v = cpu.mmu.read_byte(a);
+            let mut v = cpu.read(a);
             cpu.alu_inc_byte(&mut v);
-            cpu.mmu.write_byte(a, v);
+            cpu.write(a, v);
             3
         }), // 0x34 INC (HL)
         dop!("DEC (HL)", &|cpu: &mut CPU| {
             let a = cpu.regs.get_hl();
-            let mut v = cpu.mmu.read_byte(a);
+            let mut v = cpu.read(a);
             cpu.alu_dec_byte(&mut v);
-            cpu.mmu.write_byte(a, v);
+            cpu.write(a, v);
             3
         }), // 0x35 DEC (HL)
         dop!("LD (HL),{:#04X}", u8, &|cpu: &mut CPU, value| {
             let a = cpu.regs.get_hl();
-            cpu.mmu.write_byte(a, value);
+            cpu.write(a, value);
             3
         }), // 0x36 LD (HL),d8
         dop!("SCF", &CPU::alu_set_carry_flag), // 0x37 SCF
@@ -217,7 +225,7 @@ impl CPU {
         }), // 0x39 ADD HL,SP
         dop!("LD A,(HL-)", &|cpu: &mut CPU| {
             let addr = cpu.regs.get_hl();
-            cpu.regs.a = cpu.mmu.read_byte(addr);
+            cpu.regs.a = cpu.read(addr);
             cpu.regs.set_hl(addr - 1);
             2
         }), // 0x3A LD A,(HL-)
@@ -233,7 +241,7 @@ impl CPU {
         dop!("LD B,H", &load!(b, h)), // 0x44 LD B,H
         dop!("LD B,L", &load!(b, l)), // 0x45 LD B,L
         dop!("LD B,(HL)", &|cpu: &mut CPU| {
-            cpu.regs.b = cpu.mmu.read_byte(cpu.regs.get_hl());
+            cpu.regs.b = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x46 LD B,(HL)
         dop!("LD B,A", &load!(b, a)), // 0x47 LD B,A
@@ -244,7 +252,7 @@ impl CPU {
         dop!("LD C,H", &load!(c, h)), // 0x4C LD C,H
         dop!("LD C,L", &load!(c, l)), // 0x4D LD C,L
         dop!("LD C,(HL)", &|cpu: &mut CPU| {
-            cpu.regs.c = cpu.mmu.read_byte(cpu.regs.get_hl());
+            cpu.regs.c = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x4E LD C,(HL)
         dop!("LD C,A", &load!(c, a)), // 0x4F LD C,A
@@ -255,7 +263,7 @@ impl CPU {
         dop!("LD D,H", &load!(d, h)), // 0x54 LD B,H
         dop!("LD D,L", &load!(d, l)), // 0x55 LD B,L
         dop!("LD D,(HL)", &|cpu: &mut CPU| {
-            cpu.regs.d = cpu.mmu.read_byte(cpu.regs.get_hl());
+            cpu.regs.d = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x56 LD D,(HL)
         dop!("LD D,A", &load!(d, a)), // 0x57 LD B,A
@@ -266,7 +274,7 @@ impl CPU {
         dop!("LD E,H", &load!(e, h)), // 0x5C LD C,H
         dop!("LD E,L", &load!(e, l)), // 0x5D LD C,L
         dop!("LD E,(HL)", &|cpu: &mut CPU| {
-            cpu.regs.e = cpu.mmu.read_byte(cpu.regs.get_hl());
+            cpu.regs.e = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x5E LD E,(HL)
         dop!("LD E,A", &load!(e, a)), // 0x5F LD C,A
@@ -277,7 +285,7 @@ impl CPU {
         dop!("LD H,H", &load!(h, h)), // 0x64 LD H,H
         dop!("LD H,L", &load!(h, l)), // 0x65 LD H,L
         dop!("LD H,(HL)", &|cpu: &mut CPU| {
-            cpu.regs.h = cpu.mmu.read_byte(cpu.regs.get_hl());
+            cpu.regs.h = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x66 LD H,(HL)
         dop!("LD H,A", &load!(h, a)), // 0x67 LD H,A
@@ -288,37 +296,37 @@ impl CPU {
         dop!("LD L,H", &load!(l, h)), // 0x6C LD L,H
         dop!("LD L,L", &load!(l, l)), // 0x6D LD L,L
         dop!("LD L,(HL)", &|cpu: &mut CPU| {
-            cpu.regs.l = cpu.mmu.read_byte(cpu.regs.get_hl());
+            cpu.regs.l = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x6E LD L,(HL)
         dop!("LD L,A", &load!(l, a)), // 0x6F LD L,A
         dop!("LD (HL),B", &|cpu: &mut CPU| {
-            cpu.mmu.write_byte(cpu.regs.get_hl(), cpu.regs.b);
+            cpu.write(cpu.regs.get_hl(), cpu.regs.b);
             2
         }), // 0x70 LD (HL),B
         dop!("LD (HL),C", &|cpu: &mut CPU| {
-            cpu.mmu.write_byte(cpu.regs.get_hl(), cpu.regs.c);
+            cpu.write(cpu.regs.get_hl(), cpu.regs.c);
             2
         }), // 0x71 LD (HL),C
         dop!("LD (HL),D", &|cpu: &mut CPU| {
-            cpu.mmu.write_byte(cpu.regs.get_hl(), cpu.regs.d);
+            cpu.write(cpu.regs.get_hl(), cpu.regs.d);
             2
         }), // 0x72 LD (HL),D
         dop!("LD (HL),E", &|cpu: &mut CPU| {
-            cpu.mmu.write_byte(cpu.regs.get_hl(), cpu.regs.e);
+            cpu.write(cpu.regs.get_hl(), cpu.regs.e);
             2
         }), // 0x73 LD (HL),E
         dop!("LD (HL),H", &|cpu: &mut CPU| {
-            cpu.mmu.write_byte(cpu.regs.get_hl(), cpu.regs.h);
+            cpu.write(cpu.regs.get_hl(), cpu.regs.h);
             2
         }), // 0x74 LD (HL),H
         dop!("LD (HL),L", &|cpu: &mut CPU| {
-            cpu.mmu.write_byte(cpu.regs.get_hl(), cpu.regs.l);
+            cpu.write(cpu.regs.get_hl(), cpu.regs.l);
             2
         }), // 0x75 LD (HL),L
         dop!("HALT", &CPU::halt), // 0x76 HALT
         dop!("LD (HL),L", &|cpu: &mut CPU| {
-            cpu.mmu.write_byte(cpu.regs.get_hl(), cpu.regs.a);
+            cpu.write(cpu.regs.get_hl(), cpu.regs.a);
             2
         }), // 0x77 LD (HL),L
         dop!("LD A,B", &load!(a, b)), // 0x78 LD A,B
@@ -328,7 +336,7 @@ impl CPU {
         dop!("LD A,H", &load!(a, h)), // 0x7C LD A,H
         dop!("LD A,L", &load!(a, l)), // 0x7D LD A,L
         dop!("LD A,(HL)", &|cpu: &mut CPU| {
-            cpu.regs.a = cpu.mmu.read_byte(cpu.regs.get_hl());
+            cpu.regs.a = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x7E LD A,(HL)
         dop!("LD A,A", &load!(a, a)), // 0x7F LD A,A
@@ -340,7 +348,7 @@ impl CPU {
         dop!("ADD A,L", &alu_add!(a, l)), // 0x85 ADD A,L
         dop!("ADD A,(HL)", &|cpu: &mut CPU| {
             let a = cpu.regs.a;
-            let value = cpu.mmu.read_byte(cpu.regs.get_hl());
+            let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_add_byte(a, value);
             2
         }), // 0x86 ADD A,(HL)
@@ -353,7 +361,7 @@ impl CPU {
         dop!("ADC A,L", &alu_adc!(a, l)), // 0x8D ADC A,L
         dop!("ADC A,(HL)", &|cpu: &mut CPU| {
             let a = cpu.regs.a;
-            let value = cpu.mmu.read_byte(cpu.regs.get_hl());
+            let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_add_byte_with_carry(a, value);
             2
         }), // 0x8E ADC A,(HL)
@@ -366,7 +374,7 @@ impl CPU {
         dop!("SUB A,L", &alu_sub!(a, l)),
         dop!("SUB A,(HL)", &|cpu: &mut CPU| {
             let a = cpu.regs.a;
-            let value = cpu.mmu.read_byte(cpu.regs.get_hl());
+            let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_sub_byte(a, value);
             2
         }),
@@ -379,7 +387,7 @@ impl CPU {
         dop!("SBC A,L", &alu_sbc!(a, l)),
         dop!("SBC A,(HL)", &|cpu: &mut CPU| {
             let a = cpu.regs.a;
-            let value = cpu.mmu.read_byte(cpu.regs.get_hl());
+            let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_sub_byte_with_carry(a, value);
             2
         }),
@@ -392,7 +400,7 @@ impl CPU {
         dop!("AND A,L", &alu_and!(a, l)),
         dop!("AND A,(HL)", &|cpu: &mut CPU| {
             let a = cpu.regs.a;
-            let value = cpu.mmu.read_byte(cpu.regs.get_hl());
+            let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_and(a, value);
             2
         }),
@@ -405,7 +413,7 @@ impl CPU {
         dop!("XOR A,L", &alu_xor!(a, l)),
         dop!("XOR A,(HL)", &|cpu: &mut CPU| {
             let a = cpu.regs.a;
-            let value = cpu.mmu.read_byte(cpu.regs.get_hl());
+            let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_xor(a, value);
             2
         }),
@@ -418,7 +426,7 @@ impl CPU {
         dop!("OR A,L", &alu_or!(a, l)),
         dop!("OR A,(HL)", &|cpu: &mut CPU| {
             let a = cpu.regs.a;
-            let value = cpu.mmu.read_byte(cpu.regs.get_hl());
+            let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_or(a, value);
             2
         }),
@@ -431,7 +439,7 @@ impl CPU {
         dop!("CP A,L", &alu_cp!(a, l)),
         dop!("CP A,(HL)", &|cpu: &mut CPU| {
             let a = cpu.regs.a;
-            let value = cpu.mmu.read_byte(cpu.regs.get_hl());
+            let value = cpu.read(cpu.regs.get_hl());
             cpu.alu_cp(a, value);
             2
         }),
@@ -494,7 +502,7 @@ impl CPU {
         dop!("RST 18H", &stack_rst!(0x18)),
         dop!("LD ({:#04X}),A", u8, &|cpu: &mut CPU, addr| {
             let value = cpu.regs.a;
-            cpu.mmu.write_byte(addr as u16 + 0xFF00, value);
+            cpu.write(addr as u16 + 0xFF00, value);
             3
         }),
         dop!("POP HL", &|cpu: &mut CPU| {
@@ -505,7 +513,7 @@ impl CPU {
         dop!("LD (C),A", &|cpu: &mut CPU| {
             let addr = cpu.regs.c;
             let value = cpu.regs.a;
-            cpu.mmu.write_byte(addr as u16 + 0xFF00, value);
+            cpu.write(addr as u16 + 0xFF00, value);
             2
         }),
         dop!("0xE3 NOPE", &CPU::nonexistant),
@@ -526,7 +534,7 @@ impl CPU {
             1
         }),
         dop!("LD ({:#06X}),A", u16, &|cpu: &mut CPU, addr| {
-            cpu.mmu.write_byte(addr, cpu.regs.a);
+            cpu.write(addr, cpu.regs.a);
             4
         }),
         dop!("0xEB NOPE", &CPU::nonexistant),
@@ -539,7 +547,7 @@ impl CPU {
         }),
         dop!("RST 28H", &stack_rst!(0x28)),
         dop!("LD A,({:#04X})", u8, &|cpu: &mut CPU, addr| {
-            cpu.regs.a = cpu.mmu.read_byte(addr as u16 + 0xFF00);
+            cpu.regs.a = cpu.read(addr as u16 + 0xFF00);
             3
         }),
         dop!("POP AF", &|cpu: &mut CPU| {
@@ -549,7 +557,7 @@ impl CPU {
         }),
         dop!("LD A,(C)", &|cpu: &mut CPU| {
             let addr = cpu.regs.c;
-            cpu.regs.a = cpu.mmu.read_byte(addr as u16 + 0xFF00);
+            cpu.regs.a = cpu.read(addr as u16 + 0xFF00);
             2
         }),
         dop!("DI", &CPU::disable_interupts),
@@ -572,7 +580,7 @@ impl CPU {
             2
         }),
         dop!("LD A,({:#06X})", u16, &|cpu: &mut CPU, addr| {
-            cpu.regs.a = cpu.mmu.read_byte(addr);
+            cpu.regs.a = cpu.read(addr);
             4
         }),
         dop!("EI", &CPU::enable_interupts),
@@ -851,6 +859,8 @@ impl CPU {
             mmu: MMU::new(cartridge),
             halted: false,
             halt_bug: false,
+            locked: false,
+            instruction_cycles: 0,
             trace: false,
             ime_delay: 0,
             jit_ticks: 0,
@@ -868,7 +878,12 @@ impl CPU {
     }
 
     pub fn cycle(&mut self) -> usize {
-        let ticks = if self.halted { 1 } else { self.process() };
+        let ticks = if self.halted || self.locked {
+            self.internal();
+            1
+        } else {
+            self.process()
+        };
         self.retire(ticks)
     }
 
@@ -879,8 +894,36 @@ impl CPU {
                 self.regs.ime = true;
             }
         }
-        self.mmu.tick(ticks);
         ticks + self.service_interrupts()
+    }
+
+    fn tick_cycle(&mut self) {
+        self.mmu.tick(1);
+        self.instruction_cycles += 1;
+    }
+
+    pub(crate) fn internal(&mut self) {
+        self.tick_cycle();
+    }
+
+    pub(crate) fn read(&mut self, addr: u16) -> u8 {
+        self.tick_cycle();
+        self.mmu.cpu_read(addr)
+    }
+
+    pub(crate) fn write(&mut self, addr: u16, value: u8) {
+        if lands_before_tick(addr) {
+            self.mmu.cpu_write(addr, value);
+            self.tick_cycle();
+        } else {
+            self.tick_cycle();
+            self.mmu.cpu_write(addr, value);
+        }
+    }
+
+    fn write_word(&mut self, addr: u16, value: u16) {
+        self.write(addr, value as u8);
+        self.write(addr.wrapping_add(1), (value >> 8) as u8);
     }
 
     fn sync_jit_hardware(&mut self) {
@@ -889,25 +932,35 @@ impl CPU {
     }
 
     fn service_interrupts(&mut self) -> usize {
-        let pending = self.mmu.pending_interrupts();
-        if pending == 0 {
+        if self.mmu.pending_interrupts() == 0 || self.locked {
             return 0;
         }
         self.halted = false;
         if !self.regs.ime {
             return 0;
         }
-        let bit = pending.trailing_zeros();
         self.regs.ime = false;
-        self.mmu.acknowledge_interrupt(bit);
+        self.internal();
+        self.internal();
         let pc = self.regs.pc;
-        self.stack_push(pc);
-        self.regs.pc = 0x40 + 8 * bit as u16;
-        self.mmu.tick(5);
+        self.regs.sp = self.regs.sp.wrapping_sub(1);
+        self.write(self.regs.sp, (pc >> 8) as u8);
+        let pending = self.mmu.pending_interrupts();
+        self.regs.sp = self.regs.sp.wrapping_sub(1);
+        self.write(self.regs.sp, pc as u8);
+        self.regs.pc = if pending == 0 {
+            0x0000
+        } else {
+            let bit = pending.trailing_zeros();
+            self.mmu.acknowledge_interrupt(bit);
+            0x40 + 8 * bit as u16
+        };
+        self.internal();
         5
     }
 
     fn process(&mut self) -> usize {
+        self.instruction_cycles = 0;
         let regs = self.regs;
         let op_code = self.fetch_byte();
         let op = &CPU::OPS[op_code as usize];
@@ -920,7 +973,16 @@ impl CPU {
                 regs.one_line_rep()
             );
         }
-        (op.execute)(self)
+        let ticks = (op.execute)(self);
+        debug_assert!(
+            self.instruction_cycles <= ticks,
+            "{} accesses memory too often",
+            op.mneumonic
+        );
+        while self.instruction_cycles < ticks {
+            self.internal();
+        }
+        ticks
     }
 
     fn process_cb(&mut self) -> usize {
@@ -946,7 +1008,7 @@ impl CPU {
     }
 
     fn fetch_byte(&mut self) -> u8 {
-        let b = self.mmu.read_byte(self.regs.pc);
+        let b = self.read(self.regs.pc);
         if !std::mem::take(&mut self.halt_bug) {
             self.regs.pc = self.regs.pc.wrapping_add(1);
         }
@@ -954,9 +1016,9 @@ impl CPU {
     }
 
     fn fetch_word(&mut self) -> u16 {
-        let w = self.mmu.read_word(self.regs.pc);
-        self.regs.pc += 2;
-        w
+        let lo = self.fetch_byte() as u16;
+        let hi = self.fetch_byte() as u16;
+        hi << 8 | lo
     }
 
     // Misc/Flow Control
@@ -966,7 +1028,9 @@ impl CPU {
     }
 
     fn enable_interupts(&mut self) -> usize {
-        self.ime_delay = 2;
+        if !self.regs.ime && self.ime_delay == 0 {
+            self.ime_delay = 2;
+        }
         1
     }
 
@@ -990,7 +1054,8 @@ impl CPU {
     }
 
     fn nonexistant(&mut self) -> usize {
-        unimplemented!("this op doesn't exist on gb hardware")
+        self.locked = true;
+        1
     }
 
     fn unimplemented(&mut self) -> usize {
