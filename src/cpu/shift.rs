@@ -207,7 +207,7 @@ macro_rules! bit_hl {
             cpu.regs.set_flag(Z, (x & (1 << $i)) == 0);
             cpu.regs.set_flag(N, false);
             cpu.regs.set_flag(H, true);
-            4
+            3
         }
     };
 }

@@ -11,6 +11,7 @@ cranelift-jit = "0.136.3"
 cranelift-module = "0.136.3"
 cranelift-native = "0.136.3"
 num = "0.4"
+png = "0.18.1"
 sdl2 = "0.38.0"
 
 [profile.dev.package."*"]

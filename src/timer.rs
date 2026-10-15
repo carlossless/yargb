@@ -1,3 +1,4 @@
+#[derive(PartialEq)]
 pub struct Timer {
     counter: u16,
     tima: u8,
@@ -8,11 +9,15 @@ pub struct Timer {
 impl Timer {
     pub fn new() -> Timer {
         Timer {
-            counter: 0,
+            counter: 0xABCC,
             tima: 0,
             tma: 0,
             tac: 0,
         }
+    }
+
+    pub fn counter(&self) -> u16 {
+        self.counter
     }
 
     fn enabled(&self) -> bool {

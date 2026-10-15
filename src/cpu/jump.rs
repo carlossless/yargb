@@ -6,28 +6,28 @@ impl CPU {
         if !self.regs.get_flag(Z) {
             return self.jump(addr);
         }
-        2
+        3
     }
 
     pub fn jump_nc(&mut self, addr: u16) -> usize {
         if !self.regs.get_flag(C) {
             return self.jump(addr);
         }
-        2
+        3
     }
 
     pub fn jump_z(&mut self, addr: u16) -> usize {
         if self.regs.get_flag(Z) {
             return self.jump(addr);
         }
-        2
+        3
     }
 
     pub fn jump_c(&mut self, addr: u16) -> usize {
         if self.regs.get_flag(C) {
             return self.jump(addr);
         }
-        2
+        3
     }
 
     pub fn jump(&mut self, addr: u16) -> usize {

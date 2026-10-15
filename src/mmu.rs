@@ -1,227 +1,198 @@
-use crate::gpu::GPU;
-use crate::mbc::MBC;
-use crate::mbc::nullmbc::NULLMBC;
-
-use crate::mbc::mbc1::MBC1;
+use crate::apu::Apu;
+use crate::cartridge::Cartridge;
+use crate::ppu::Ppu;
 use crate::timer::Timer;
 
 const TIMER_INTERRUPT: u8 = 1 << 2;
+const SERIAL_INTERRUPT: u8 = 1 << 3;
+const JOYPAD_INTERRUPT: u8 = 1 << 4;
+
+const SERIAL_TRANSFER_CYCLES: u32 = 4096;
+const FRAME_SEQUENCER_PERIOD: usize = 8192;
 
 pub fn is_io(addr: u16) -> bool {
     matches!(addr, 0xFF00..=0xFF7F | 0xFFFF)
 }
 
+/// Whether a write to `addr` must see the PPU caught up to the current cycle.
+pub fn needs_sync_on_write(addr: u16) -> bool {
+    is_io(addr) || matches!(addr, 0x8000..=0x9FFF | 0xFE00..=0xFE9F)
+}
+
+/// Joypad buttons as bits of the state passed to `MMU::set_buttons`.
+pub mod buttons {
+    pub const RIGHT: u8 = 1 << 0;
+    pub const LEFT: u8 = 1 << 1;
+    pub const UP: u8 = 1 << 2;
+    pub const DOWN: u8 = 1 << 3;
+    pub const A: u8 = 1 << 4;
+    pub const B: u8 = 1 << 5;
+    pub const SELECT: u8 = 1 << 6;
+    pub const START: u8 = 1 << 7;
+}
+
 pub struct MMU {
-    mbc: Box<dyn MBC>,
-    gpu: GPU,
+    cartridge: Cartridge,
+    pub(crate) ppu: Ppu,
+    pub(crate) apu: Apu,
     pub(crate) work_ram: [u8; 0x2000],
     pub(crate) high_ram: [u8; 0x7F],
     timer: Timer,
     interupt_flags: u8,
     interupt_enable: u8,
-    sound_flags: u8,
-    sound_output: u8,
-    channel_control: u8,
-    lcd_control: u8,
-    unused_io: [u8; 0x0034],
+    joypad_select: u8,
+    buttons: u8,
+    serial_data: u8,
+    serial_control: u8,
+    serial_cycles: u32,
+    serial_output: bool,
+    dma_source: u8,
     exit_request: bool,
     pub(crate) code_refs: [u8; 0x10000],
     dirty_code: Vec<u16>,
 }
 
 impl MMU {
-    pub fn new(rom_data: &Vec<u8>) -> MMU {
-        let title = rom_data[0x134..0x143]
-            .iter()
-            .map(|&c| c as char)
-            .collect::<String>();
-        let manufacturer_code = rom_data[0x13F..0x143].to_owned();
-        let cgb_flag = rom_data[0x143];
-        let licensee_code_new = rom_data[0x144..0x146].to_owned();
-        let sgb_flag = rom_data[0x146];
-        let cartridge_type = rom_data[0x147];
-        let rom_size = rom_data[0x148];
-        let ram_size = rom_data[0x149];
-        let destination_code = rom_data[0x14A];
-        let licensee_code_old = rom_data[0x14B];
-        let mask_rom_version = rom_data[0x14C];
-        let header_checksum = rom_data[0x14D];
-        let global_checksum = rom_data[0x14E..0x150]
-            .iter()
-            .map(|&c| c as u16)
-            .sum::<u16>();
-
-        // print!("Title: {}\nManufacturer Code: {:?}\n CGB Flag: {:02x}\n Licensee Code (new): {:?}\n SGB Flag: {:02x}\n Cartridge Type: {:02x}\n ROM Size: {:02x}\n RAM Size: {:02x}\n Destination Code: {:02x}\n Licensee Code (old): {:02x}\n Mask ROM Version: {:02x}\n Header Checksum: {:02x}\n Global Checksum: {:?}\n", title, manufacturer_code, cgb_flag, licensee_code_new, sgb_flag, cartridge_type, rom_size, ram_size, destination_code, licensee_code_old, mask_rom_version, header_checksum, global_checksum);
-
-        let mbc: Box<dyn MBC> = match cartridge_type {
-            0x00 => Box::new(NULLMBC::new(rom_data.to_owned())),
-            0x01 => Box::new(MBC1::new(rom_data.to_owned())),
-            _ => panic!("Cartridge Type {:02x} is unsupported", cartridge_type),
-        };
-
+    pub fn new(cartridge: Cartridge) -> MMU {
         MMU {
-            mbc: mbc,
-            gpu: GPU::new(),
+            cartridge,
+            ppu: Ppu::new(),
+            apu: Apu::new(),
             work_ram: [0; 0x2000],
             high_ram: [0; 0x7F],
             timer: Timer::new(),
-            interupt_flags: 0x00,
+            interupt_flags: 0x01,
             interupt_enable: 0x00,
-            sound_flags: 0xF1, //0xF0 for SGB
-            sound_output: 0x00,
-            channel_control: 0x00,
-            lcd_control: 0x00,
-            unused_io: [0; 0x0034],
+            joypad_select: 0x30,
+            buttons: 0,
+            serial_data: 0,
+            serial_control: 0,
+            serial_cycles: 0,
+            serial_output: false,
+            dma_source: 0xFF,
             exit_request: false,
             code_refs: [0; 0x10000],
             dirty_code: Vec::new(),
         }
     }
 
+    pub fn cartridge(&self) -> &Cartridge {
+        &self.cartridge
+    }
+
+    pub fn set_serial_output(&mut self, enabled: bool) {
+        self.serial_output = enabled;
+    }
+
+    pub fn set_buttons(&mut self, pressed: u8) {
+        if pressed & !self.buttons != 0 {
+            self.interupt_flags |= JOYPAD_INTERRUPT;
+        }
+        self.buttons = pressed;
+    }
+
+    fn joypad(&self) -> u8 {
+        let mut pressed = 0;
+        if self.joypad_select & 0x10 == 0 {
+            pressed |= self.buttons & 0x0F;
+        }
+        if self.joypad_select & 0x20 == 0 {
+            pressed |= self.buttons >> 4;
+        }
+        0xC0 | self.joypad_select | !pressed & 0x0F
+    }
+
     pub fn read_byte(&self, addr: u16) -> u8 {
         match addr {
-            0x0000..=0x7FFF => self.mbc.read_rom(addr),
-            0x8000..=0x9FFF => self.gpu.read_byte(addr - 0x8000),
-            0xC000..=0xDFFF => self.work_ram[(addr - 0xC000) as usize],
-            0xFF00 => {
-                println!("read joypad (unimplemented)");
-                0x0f
-            }
-            0xFF01 => {
-                println!("read serial_data");
-                0x00
-            }
-            0xFF02 => {
-                println!("read serial_clock");
-                0x00
-            }
+            0x0000..=0x7FFF => self.cartridge.read_rom(addr),
+            0x8000..=0x9FFF => self.ppu.read_vram(addr),
+            0xA000..=0xBFFF => self.cartridge.read_ram(addr),
+            0xC000..=0xDFFF => self.work_ram[addr as usize - 0xC000],
+            0xE000..=0xFDFF => self.work_ram[addr as usize - 0xE000],
+            0xFE00..=0xFE9F => self.ppu.read_oam(addr),
+            0xFEA0..=0xFEFF => 0x00,
+            0xFF00 => self.joypad(),
+            0xFF01 => self.serial_data,
+            0xFF02 => self.serial_control | 0x7E,
             0xFF04..=0xFF07 => self.timer.read_byte(addr),
             0xFF0F => self.interupt_flags | 0xE0,
-            0xFF24 => self.channel_control,
-            0xFF25 => self.sound_output,
-            0xFF26 => self.sound_flags,
-            0xFF40 => self.lcd_control,
-            0xFF42 => self.gpu.scy,
-            0xFF43 => self.gpu.scx,
-            0xFF44 => {
-                /*println!("lcdc_y_coordinate");*/
-                0x10
-            } // TODO: needs to be implemented on GPU when drawing the line
-            // 0xFF4C..=0xFF7F => self.unused_io[(addr - 0xFF4C) as usize], // TODO: has GPU functions
-            0xFF4D => {
-                println!("read speed_switch");
-                return 0xff;
-            }
-            0xFF80..=0xFFFE => self.high_ram[(addr - 0xFF80) as usize],
+            0xFF10..=0xFF3F => self.apu.read(addr),
+            0xFF46 => self.dma_source,
+            0xFF40..=0xFF4B => self.ppu.read_register(addr),
+            0xFF80..=0xFFFE => self.high_ram[addr as usize - 0xFF80],
             0xFFFF => self.interupt_enable,
-            other => panic!("MMU read for {:2X} is not implemented", other),
+            _ => 0xFF,
         }
     }
 
     pub fn read_word(&self, addr: u16) -> u16 {
-        (self.read_byte(addr) as u16) | ((self.read_byte(addr + 1) as u16) << 8)
+        (self.read_byte(addr) as u16) | ((self.read_byte(addr.wrapping_add(1)) as u16) << 8)
     }
 
     pub fn write_byte(&mut self, addr: u16, value: u8) {
         if is_io(addr) || addr < 0x8000 {
             self.exit_request = true;
         }
-        if self.code_refs[addr as usize] != 0 {
+        let code_addr = if (0xE000..0xFE00).contains(&addr) {
+            addr - 0x2000
+        } else {
+            addr
+        };
+        if self.code_refs[code_addr as usize] != 0 {
             self.exit_request = true;
-            self.dirty_code.push(addr);
+            self.dirty_code.push(code_addr);
         }
         match addr {
-            0x0000..=0x7FFF => self.mbc.write_rom(addr, value),
-            0x8000..=0x9FFF => self.gpu.write_byte(addr - 0x8000, value),
-            0xC000..=0xDFFF => self.work_ram[(addr - 0xC000) as usize] = value,
-            0xFF00 => {
-                println!("write joypad (unimplemented)");
-                println!("write joypad {:#2X}", value);
-                if value & (1 << 4) != 0 {
-                    println!("selected buttons: SsBA")
-                } else {
-                    println!("selected buttons: directional")
+            0x0000..=0x7FFF => self.cartridge.write_rom(addr, value),
+            0x8000..=0x9FFF => self.ppu.write_vram(addr, value),
+            0xA000..=0xBFFF => self.cartridge.write_ram(addr, value),
+            0xC000..=0xDFFF => self.work_ram[addr as usize - 0xC000] = value,
+            0xE000..=0xFDFF => self.work_ram[addr as usize - 0xE000] = value,
+            0xFE00..=0xFE9F => self.ppu.write_oam(addr, value),
+            0xFF00 => self.joypad_select = value & 0x30,
+            0xFF01 => self.serial_data = value,
+            0xFF02 => {
+                self.serial_control = value & 0x81;
+                if value & 0x81 == 0x81 {
+                    if self.serial_output {
+                        eprint!("{}", self.serial_data as char);
+                    }
+                    self.serial_cycles = SERIAL_TRANSFER_CYCLES;
                 }
             }
-            0xFF01 => {
-                println!("write serial_data {:#2X}", value);
-                eprint!("{:}", value as char);
+            0xFF04 => {
+                let frame_sequencer_edge = self.timer.counter() & 0x1000 != 0;
+                if self.timer.write_byte(addr, value) {
+                    self.interupt_flags |= TIMER_INTERRUPT;
+                }
+                if frame_sequencer_edge {
+                    self.apu.step_frame_sequencer();
+                }
             }
-            0xFF02 => println!("serial_clock {:#2X}", value),
-            0xFF04..=0xFF07 => {
+            0xFF05..=0xFF07 => {
                 if self.timer.write_byte(addr, value) {
                     self.interupt_flags |= TIMER_INTERRUPT;
                 }
             }
-            0xFF0F => {
-                self.interupt_flags = value & 0x1F;
-                println!("write interupt_flags {:b}", value);
+            0xFF0F => self.interupt_flags = value & 0x1F,
+            0xFF10..=0xFF3F => self.apu.write(addr, value),
+            0xFF46 => {
+                self.dma_source = value;
+                let source = (value as u16) << 8;
+                for index in 0..0xA0 {
+                    let byte = self.read_byte(source + index);
+                    self.ppu.write_oam_index(index as usize, byte);
+                }
             }
-            0xFF11 => {
-                println!("write channel1 config {:b}", value);
-            }
-            0xFF12 => {
-                println!("write channel1 volume envelope {:b}", value);
-            }
-            0xFF13 => {
-                println!("write channel1 frequency low {:b}", value);
-            }
-            0xFF14 => {
-                println!("write channel1 frequency high {:b}", value);
-            }
-            0xFF24 => {
-                self.channel_control = value;
-                println!("write channel_control {:b}", value);
-            }
-            0xFF25 => {
-                self.sound_output = value;
-                println!("write sound_output {:b}", value);
-            }
-            0xFF26 => {
-                self.sound_flags = value;
-                println!("write sound_flags {:b}", value);
-            }
-            0xFF40 => {
-                self.lcd_control = value;
-            }
-            0xFF42 => self.gpu.scy = value,
-            0xFF43 => self.gpu.scx = value,
-            0xFF44 => { /*println!("lcdc_y_coordinate {:#2X}", value);*/ } // TODO: needs to be implemented on GPU when drawing the line
-            0xFF47 => self.gpu.bgp = value,
-            0xFF68 => {
-                println!("write bgp_index {:#2X}", value);
-            }
-            0xFF69 => {
-                println!("write bgp_data {:#2X}", value);
-            }
-            0xFF6A => {
-                println!("write obp_index {:#2X}", value);
-            }
-            0xFF6B => {
-                println!("write obp_data {:#2X}", value);
-            }
-
-            0xFF4F => {
-                println!("write vram_bank {:#2X}", value);
-            }
-            // 0xFF4C..=0xFF7F => {
-            //     self.unused_io[(addr - 0xFF4C) as usize] = value;
-            //     println!("write unused_io {:04x} {:02x}", addr, value);
-            // }
-            0xFF4D => {
-                println!("write speed_switch {:#2X}", value);
-            }
-            0xFF80..=0xFFFE => self.high_ram[(addr - 0xFF80) as usize] = value,
-            0xFFFF => {
-                self.interupt_enable = value;
-                println!("write interupt_enable {:b}", value);
-            }
-            other => panic!("MMU write for {:2X} is not implemented", other),
+            0xFF40..=0xFF4B => self.interupt_flags |= self.ppu.write_register(addr, value),
+            0xFF80..=0xFFFE => self.high_ram[addr as usize - 0xFF80] = value,
+            0xFFFF => self.interupt_enable = value,
+            _ => {}
         }
     }
 
     pub fn rom_offset(&self, addr: u16) -> usize {
-        self.mbc.rom_offset(addr)
+        self.cartridge.rom_offset(addr)
     }
 
     pub fn take_exit_request(&mut self) -> bool {
@@ -246,27 +217,76 @@ impl MMU {
 
     #[cfg(test)]
     pub fn same_state(&self, other: &MMU) -> bool {
-        let registers = |mmu: &MMU| {
-            (0xFF04..=0xFF07)
-                .map(|addr| mmu.timer.read_byte(addr))
-                .collect::<Vec<_>>()
-        };
-        self.work_ram == other.work_ram
+        self.cartridge == other.cartridge
+            && self.ppu == other.ppu
+            && self.apu == other.apu
+            && self.work_ram == other.work_ram
             && self.high_ram == other.high_ram
-            && self.gpu.video_ram() == other.gpu.video_ram()
-            && registers(self) == registers(other)
-            && (self.interupt_flags, self.interupt_enable)
-                == (other.interupt_flags, other.interupt_enable)
+            && self.timer == other.timer
+            && (
+                self.interupt_flags,
+                self.interupt_enable,
+                self.joypad_select,
+                self.buttons,
+            ) == (
+                other.interupt_flags,
+                other.interupt_enable,
+                other.joypad_select,
+                other.buttons,
+            )
+            && (
+                self.serial_data,
+                self.serial_control,
+                self.serial_cycles,
+                self.dma_source,
+            ) == (
+                other.serial_data,
+                other.serial_control,
+                other.serial_cycles,
+                other.dma_source,
+            )
     }
 
     pub fn tick(&mut self, m_cycles: usize) {
+        let t_cycles = m_cycles * 4;
+        let mut counter = self.timer.counter() as usize;
         if self.timer.tick(m_cycles) {
             self.interupt_flags |= TIMER_INTERRUPT;
         }
+        self.interupt_flags |= self.ppu.tick(t_cycles);
+        let mut remaining = t_cycles;
+        while remaining > 0 {
+            let step = remaining.min(FRAME_SEQUENCER_PERIOD - counter % FRAME_SEQUENCER_PERIOD);
+            self.apu.tick(step);
+            counter += step;
+            remaining -= step;
+            if counter % FRAME_SEQUENCER_PERIOD == 0 {
+                self.apu.step_frame_sequencer();
+            }
+        }
+        self.cartridge.tick(t_cycles);
+        if self.serial_cycles > 0 {
+            self.serial_cycles = self.serial_cycles.saturating_sub(t_cycles as u32);
+            if self.serial_cycles == 0 {
+                self.serial_data = 0xFF;
+                self.serial_control &= 0x7F;
+                self.interupt_flags |= SERIAL_INTERRUPT;
+            }
+        }
     }
 
+    /// M-cycles until a component could raise an interrupt that IE enables.
+    /// It may be early, never late.
     pub fn m_cycles_until_event(&self) -> usize {
-        self.timer.m_cycles_until_overflow()
+        let enabled = self.interupt_enable;
+        let mut m_cycles = self.ppu.t_cycles_until_interrupt(enabled).div_ceil(4);
+        if enabled & TIMER_INTERRUPT != 0 {
+            m_cycles = m_cycles.min(self.timer.m_cycles_until_overflow());
+        }
+        if enabled & SERIAL_INTERRUPT != 0 && self.serial_cycles > 0 {
+            m_cycles = m_cycles.min((self.serial_cycles as usize).div_ceil(4));
+        }
+        m_cycles
     }
 
     pub fn pending_interrupts(&self) -> u8 {
@@ -279,6 +299,6 @@ impl MMU {
 
     pub fn write_word(&mut self, addr: u16, value: u16) {
         self.write_byte(addr, (value & 0xFF) as u8);
-        self.write_byte(addr + 1, (value >> 8) as u8);
+        self.write_byte(addr.wrapping_add(1), (value >> 8) as u8);
     }
 }

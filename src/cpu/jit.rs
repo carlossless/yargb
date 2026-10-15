@@ -12,7 +12,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Module, default_libcall_names};
 
 use crate::cpu::CPU;
-use crate::mmu::{MMU, is_io};
+use crate::mmu::{MMU, is_io, needs_sync_on_write};
 use crate::registers::Registers;
 
 const MAX_BLOCK_INSTRUCTIONS: u32 = 64;
@@ -65,7 +65,7 @@ pub struct Jit {
 }
 
 impl Jit {
-    pub fn new(rom_size: usize) -> Jit {
+    pub fn new(cpu: &CPU) -> Jit {
         let mut flags = settings::builder();
         flags.set("opt_level", "speed").unwrap();
         flags.set("use_colocated_libcalls", "false").unwrap();
@@ -82,7 +82,7 @@ impl Jit {
             ctx: module.make_context(),
             module,
             builder_ctx: FunctionBuilderContext::new(),
-            rom_blocks: vec![RomEntry::Cold(0); rom_size],
+            rom_blocks: vec![RomEntry::Cold(0); cpu.mmu.cartridge().rom_len()],
             ram_blocks: (0..0x10000).map(|_| None).collect(),
             ram_hits: vec![0; 0x10000],
             hot_threshold: HOT_THRESHOLD,
@@ -94,7 +94,11 @@ impl Jit {
             cpu.mmu.take_exit_request();
             cpu.jit_ticks = 0;
             cpu.jit_synced = 0;
-            cpu.jit_budget = cpu.mmu.m_cycles_until_event().min(u32::MAX as usize) as u32;
+            cpu.jit_budget = if cpu.regs.ime {
+                cpu.mmu.m_cycles_until_event().min(u32::MAX as usize) as u32
+            } else {
+                u32::MAX
+            };
             let result = unsafe { block(cpu) };
             let instructions = (result >> 32) as usize;
             if instructions > 0 {
@@ -116,7 +120,7 @@ impl Jit {
         for addr in cpu.mmu.take_dirty_code() {
             self.invalidate(&mut cpu.mmu, addr as usize);
         }
-        if cpu.trace || cpu.halted || cpu.ime_delay > 0 {
+        if cpu.trace || cpu.halted || cpu.halt_bug || cpu.ime_delay > 0 {
             return None;
         }
         let pc = cpu.regs.pc;
@@ -314,7 +318,7 @@ extern "C" fn jit_read(cpu: *mut CPU, addr: u32) -> u32 {
     let cpu = unsafe { &mut *cpu };
     let addr = addr as u16;
     if is_io(addr) {
-        cpu.sync_jit_timer();
+        cpu.sync_jit_hardware();
     }
     cpu.mmu.read_byte(addr) as u32
 }
@@ -322,8 +326,8 @@ extern "C" fn jit_read(cpu: *mut CPU, addr: u32) -> u32 {
 extern "C" fn jit_write(cpu: *mut CPU, addr: u32, value: u32) -> u32 {
     let cpu = unsafe { &mut *cpu };
     let addr = addr as u16;
-    if is_io(addr) {
-        cpu.sync_jit_timer();
+    if needs_sync_on_write(addr) {
+        cpu.sync_jit_hardware();
     }
     cpu.mmu.write_byte(addr, value as u8);
     cpu.mmu.take_exit_request() as u32
@@ -331,7 +335,7 @@ extern "C" fn jit_write(cpu: *mut CPU, addr: u32, value: u32) -> u32 {
 
 extern "C" fn jit_interpret(cpu: *mut CPU) -> u32 {
     let cpu = unsafe { &mut *cpu };
-    cpu.sync_jit_timer();
+    cpu.sync_jit_hardware();
     let ticks = cpu.process() as u32;
     let exit = cpu.mmu.take_exit_request() || cpu.halted;
     ticks | (exit as u32) << 16
@@ -915,7 +919,11 @@ impl<'a> Emitter<'a> {
                 self.set(z as usize, result);
             }
         }
-        self.tick(if z == 6 { 4 } else { 2 });
+        self.tick(match (z, op >> 6) {
+            (6, 1) => 3,
+            (6, _) => 4,
+            _ => 2,
+        });
     }
 
     fn shift(&mut self, kind: u8, value: Value) -> Value {
@@ -1114,7 +1122,7 @@ impl<'a> Emitter<'a> {
                 return self.conditional_jump(y - 4, target, next, 3, 2, n);
             }
             0xC2 | 0xCA | 0xD2 | 0xDA => {
-                return self.conditional_jump(y, imm16, next, 4, 2, n);
+                return self.conditional_jump(y, imm16, next, 4, 3, n);
             }
             0xC3 => {
                 self.tick(4);
@@ -1276,14 +1284,15 @@ impl<'a> Emitter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cartridge::Cartridge;
 
     fn assert_lockstep(rom: &[u8], hot_threshold: u16, steps: usize, stop_at: Option<u16>) {
         let rom = rom.to_vec();
-        let mut interpreted = CPU::new(&rom);
-        let mut jitted = CPU::new(&rom);
-        let mut jit = Jit::new(rom.len());
+        let mut interpreted = CPU::new(Cartridge::new(rom.clone(), None));
+        let mut jitted = CPU::new(Cartridge::new(rom.clone(), None));
+        let mut jit = Jit::new(&jitted);
         jit.hot_threshold = hot_threshold;
-        let state = |cpu: &CPU| (cpu.regs, cpu.halted, cpu.ime_delay);
+        let state = |cpu: &CPU| (cpu.regs, cpu.halted, cpu.halt_bug, cpu.ime_delay);
         for step in 0..steps {
             if stop_at == Some(jitted.regs.pc) {
                 return;
@@ -1291,7 +1300,9 @@ mod tests {
             let start = jitted.regs;
             let result = jit.step(&mut jitted);
             let ticks: usize = (0..result.instructions).map(|_| interpreted.cycle()).sum();
-            let memory_differs = !interpreted.mmu.same_state(&jitted.mmu);
+            let memory_differs = interpreted.mmu.apu.take_samples()
+                != jitted.mmu.apu.take_samples()
+                || !interpreted.mmu.same_state(&jitted.mmu);
             if ticks != result.ticks || state(&interpreted) != state(&jitted) || memory_differs {
                 panic!(
                     "diverged at step {step} after {} instructions from {start:?}\n\
@@ -1367,7 +1378,26 @@ mod tests {
     fn memory_op(rng: &mut Rng) -> Vec<u8> {
         let [lo, hi] = rng.wram();
         let mut code = vec![0x21, lo, hi];
-        match rng.below(10) {
+        match rng.below(15) {
+            10 => {
+                let [lo, hi] = (0x8000 + rng.below(0x2000) as u16).to_le_bytes();
+                code = vec![0x21, lo, hi, rng.pick(&[0x77, 0x7E, 0x34])];
+            }
+            11 => code = vec![0x21, rng.below(0xA0) as u8, 0xFE, rng.pick(&[0x77, 0x7E])],
+            12 => code = vec![0xF0, rng.pick(&[0x41, 0x44, 0x26, 0x12, 0x30, 0x00])],
+            13 => {
+                let port = rng.pick(&[
+                    0x10, 0x11, 0x12, 0x13, 0x14, 0x16, 0x17, 0x19, 0x1A, 0x1C, 0x1E, 0x21, 0x22,
+                    0x23, 0x24, 0x25, 0x26, 0x30, 0x40, 0x41, 0x42, 0x43, 0x45, 0x47, 0x4A, 0x4B,
+                ]);
+                let value = match port {
+                    0x40 => rng.pick(&[0x91, 0x93, 0xB3, 0xE3, 0x11]),
+                    0x45 => rng.below(154) as u8,
+                    _ => rng.byte(),
+                };
+                code = vec![0x3E, value, 0xE0, port];
+            }
+            14 => code = vec![0x3E, 0xC0 + rng.below(8) as u8, 0xE0, 0x46],
             0 => code.push(0x46 | (rng.pick(&[0u8, 1, 2, 3, 7])) << 3),
             1 => code.push(0x70 | rng.pick(&[0u8, 1, 2, 3, 4, 5, 7])),
             2 => code.push(0x86 | (rng.below(8) as u8) << 3),
@@ -1399,7 +1429,7 @@ mod tests {
             }
             2 => vec![rng.pick(&[0xC4, 0xCC, 0xD4, 0xDC, 0xCD]), sub_lo, sub_hi],
             3 => vec![0xFF],
-            4 => vec![rng.pick(&[0xF3, 0xFB, 0x76])],
+            4 => vec![rng.pick(&[0xF3, 0xFB, 0x76]), 0x00],
             5 => vec![0xCD, ram_lo, ram_hi],
             6 => vec![
                 0x3E,
@@ -1420,6 +1450,8 @@ mod tests {
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let mut rom = vec![0u8; 0x8000];
         rom[0x38] = 0xC9;
+        rom[0x40..0x42].copy_from_slice(&[0x04, 0xD9]);
+        rom[0x48..0x4A].copy_from_slice(&[0x0C, 0xD9]);
         rom[0x50..0x52].copy_from_slice(&[0x1C, 0xD9]);
 
         let mut sub = Vec::new();
@@ -1431,7 +1463,21 @@ mod tests {
 
         let [ram_lo, ram_hi] = RAM_ROUTINE.to_le_bytes();
         let mut code = vec![
-            0x31, 0x00, 0xD0, 0x3E, 0x05, 0xE0, 0x07, 0x3E, 0x04, 0xE0, 0xFF,
+            0x31,
+            0x00,
+            0xD0,
+            0x3E,
+            0x05,
+            0xE0,
+            0x07,
+            0x3E,
+            0x07,
+            0xE0,
+            0xFF,
+            0x3E,
+            rng.byte() & 0x78,
+            0xE0,
+            0x41,
         ];
         for (i, byte) in [0x04, 0x0C, 0xC9].into_iter().enumerate() {
             code.extend([0x3E, byte, 0xEA, ram_lo + i as u8, ram_hi]);

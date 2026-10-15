@@ -1,3 +1,4 @@
+use crate::cartridge::Cartridge;
 use crate::mmu::MMU;
 use crate::registers::Registers;
 use crate::registers::WordRegister::{BC, DE, HL, SP};
@@ -18,6 +19,7 @@ pub struct CPU {
     regs: Registers,
     mmu: MMU,
     pub halted: bool,
+    halt_bug: bool,
     pub trace: bool,
     ime_delay: u8,
     jit_ticks: u32,
@@ -843,27 +845,26 @@ impl CPU {
         dop!("SET 7,A", &set!(7, a)),
     ];
 
-    pub fn new(rom_data: &Vec<u8>) -> CPU {
-        // print!("OPCODES");
-        // for (addr, op) in Self::OPS.iter().enumerate() {
-        //     println!("{:02x} {:}", addr, op.mneumonic);
-        // }
-
-        // print!("CB OPCODES");
-        // for (addr, op) in Self::CB_OPS.iter().enumerate() {
-        //     println!("{:02x} {:}", addr, op.mneumonic);
-        // }
-
+    pub fn new(cartridge: Cartridge) -> CPU {
         CPU {
             regs: Registers::new(),
-            mmu: MMU::new(rom_data),
+            mmu: MMU::new(cartridge),
             halted: false,
+            halt_bug: false,
             trace: false,
             ime_delay: 0,
             jit_ticks: 0,
             jit_synced: 0,
             jit_budget: 0,
         }
+    }
+
+    pub fn mmu(&self) -> &MMU {
+        &self.mmu
+    }
+
+    pub fn mmu_mut(&mut self) -> &mut MMU {
+        &mut self.mmu
     }
 
     pub fn cycle(&mut self) -> usize {
@@ -882,7 +883,7 @@ impl CPU {
         ticks + self.service_interrupts()
     }
 
-    fn sync_jit_timer(&mut self) {
+    fn sync_jit_hardware(&mut self) {
         self.mmu.tick((self.jit_ticks - self.jit_synced) as usize);
         self.jit_synced = self.jit_ticks;
     }
@@ -946,7 +947,9 @@ impl CPU {
 
     fn fetch_byte(&mut self) -> u8 {
         let b = self.mmu.read_byte(self.regs.pc);
-        self.regs.pc += 1;
+        if !std::mem::take(&mut self.halt_bug) {
+            self.regs.pc = self.regs.pc.wrapping_add(1);
+        }
         b
     }
 
@@ -963,26 +966,25 @@ impl CPU {
     }
 
     fn enable_interupts(&mut self) -> usize {
-        println!("enable_interupts");
         self.ime_delay = 2;
         1
     }
 
     fn disable_interupts(&mut self) -> usize {
-        println!("disable_interupts");
         self.regs.ime = false;
         self.ime_delay = 0;
         1
     }
 
     fn stop(&mut self) -> usize {
-        println!("STOP not implemented");
         1
     }
 
     fn halt(&mut self) -> usize {
         if self.regs.ime || self.mmu.pending_interrupts() == 0 {
             self.halted = true;
+        } else {
+            self.halt_bug = true;
         }
         1
     }
@@ -994,12 +996,6 @@ impl CPU {
     fn unimplemented(&mut self) -> usize {
         unimplemented!("op is unimplemented")
     }
-
-    // DEBUG
-
-    pub fn print_reg_state(&self) {
-        println!("REGS: {:?}", self.regs);
-    }
 }
 
 #[cfg(test)]
@@ -1009,7 +1005,7 @@ mod tests {
     fn create_cpu_with_single_instruction(instruction: Vec<u8>) -> CPU {
         let mut rom_data = vec![0x00; 0x10000];
         rom_data[0x100..(0x100 + instruction.len())].copy_from_slice(&instruction);
-        CPU::new(&rom_data)
+        CPU::new(Cartridge::new(rom_data, None))
     }
 
     #[test]
