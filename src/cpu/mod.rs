@@ -15,11 +15,9 @@ mod stack;
 #[macro_use]
 mod shift;
 
-/// Writes to TAC take effect before the timer counter advances in the same
-/// M-cycle, unlike other writes, which see the hardware after it.
-fn lands_before_tick(addr: u16) -> bool {
-    addr == 0xFF07
-}
+/// T-cycles into its M-cycle at which a CPU write lands. Reads see the
+/// hardware at the end of their M-cycle.
+pub(crate) const WRITE_T: usize = 3;
 
 pub struct CPU {
     regs: Registers,
@@ -912,13 +910,10 @@ impl CPU {
     }
 
     pub(crate) fn write(&mut self, addr: u16, value: u8) {
-        if lands_before_tick(addr) {
-            self.mmu.cpu_write(addr, value);
-            self.tick_cycle();
-        } else {
-            self.tick_cycle();
-            self.mmu.cpu_write(addr, value);
-        }
+        self.instruction_cycles += 1;
+        self.mmu.begin_cycle(WRITE_T);
+        self.mmu.cpu_write(addr, value);
+        self.mmu.finish_cycle();
     }
 
     fn write_word(&mut self, addr: u16, value: u16) {

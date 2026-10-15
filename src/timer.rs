@@ -5,10 +5,8 @@ enum Reload {
     Reloaded,
 }
 
-/// T-cycles into its M-cycle at which a TAC write lands. The write is applied
-/// before that M-cycle is ticked, so the timer runs ahead to this point.
-const TAC_WRITE_T: u8 = 3;
-
+/// DIV, TIMA, TMA and TAC, ticked in T-cycles. The reload that follows a TIMA
+/// overflow advances on M-cycle boundaries, tracked by `phase`.
 #[derive(PartialEq)]
 pub struct Timer {
     counter: u16,
@@ -16,8 +14,7 @@ pub struct Timer {
     tma: u8,
     tac: u8,
     reload: Reload,
-    elapsed_t: u8,
-    latched_interrupt: bool,
+    phase: u8,
 }
 
 impl Timer {
@@ -28,18 +25,12 @@ impl Timer {
             tma: 0,
             tac: 0xF8,
             reload: Reload::Idle,
-            elapsed_t: 0,
-            latched_interrupt: false,
+            phase: 0,
         }
     }
 
     pub fn counter(&self) -> u16 {
         self.counter
-    }
-
-    /// The counter as of the start of the current M-cycle.
-    pub fn cycle_counter(&self) -> u16 {
-        self.counter.wrapping_sub(self.elapsed_t as u16)
     }
 
     fn enabled(&self) -> bool {
@@ -90,23 +81,20 @@ impl Timer {
         }
     }
 
-    /// Advances by whole M-cycles and returns whether the timer interrupt
-    /// was raised. The first M-cycle may already be partly done by a TAC write.
-    pub fn tick(&mut self, m_cycles: usize) -> bool {
-        let mut interrupt = std::mem::take(&mut self.latched_interrupt);
-        let mut remaining = m_cycles;
-        while remaining > 0 && (self.enabled() || self.reload != Reload::Idle || self.elapsed_t > 0)
-        {
-            if self.elapsed_t == 0 {
+    /// Advances by T-cycles and returns whether the timer interrupt was raised.
+    pub fn tick(&mut self, t_cycles: usize) -> bool {
+        let mut interrupt = false;
+        let mut remaining = t_cycles;
+        while remaining > 0 && (self.enabled() || self.reload != Reload::Idle) {
+            if self.phase == 0 {
                 interrupt |= self.step_reload();
             }
-            for _ in self.elapsed_t..4 {
-                self.set_counter(self.counter.wrapping_add(1));
-            }
-            self.elapsed_t = 0;
+            self.set_counter(self.counter.wrapping_add(1));
+            self.phase = (self.phase + 1) % 4;
             remaining -= 1;
         }
-        self.counter = self.counter.wrapping_add((remaining * 4) as u16);
+        self.counter = self.counter.wrapping_add(remaining as u16);
+        self.phase = ((self.phase as usize + remaining) % 4) as u8;
         interrupt
     }
 
@@ -120,7 +108,7 @@ impl Timer {
         let period = 2usize << self.tima_bit();
         let first_edge = period - (self.counter as usize % period);
         let t_cycles = first_edge + (0xFF - self.tima as usize) * period;
-        t_cycles.div_ceil(4)
+        t_cycles / 4
     }
 
     pub fn read_byte(&self, addr: u16) -> u8 {
@@ -150,13 +138,6 @@ impl Timer {
                 }
             }
             _ => {
-                if self.elapsed_t == 0 {
-                    self.latched_interrupt |= self.step_reload();
-                }
-                for _ in self.elapsed_t..TAC_WRITE_T {
-                    self.set_counter(self.counter.wrapping_add(1));
-                }
-                self.elapsed_t = TAC_WRITE_T;
                 let before = self.tima_signal();
                 self.tac = value | 0xF8;
                 if before && !self.tima_signal() {

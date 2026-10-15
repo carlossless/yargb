@@ -16,8 +16,8 @@ pub fn is_io(addr: u16) -> bool {
     matches!(addr, 0xFF00..=0xFF7F | 0xFFFF)
 }
 
-/// Whether a write to `addr` must see the PPU caught up to the current cycle.
-pub fn needs_sync_on_write(addr: u16) -> bool {
+/// Whether an access to `addr` must see the hardware caught up to the current cycle.
+pub fn needs_sync(addr: u16) -> bool {
     is_io(addr) || matches!(addr, 0x8000..=0x9FFF | 0xFE00..=0xFE9F)
 }
 
@@ -51,6 +51,10 @@ pub struct MMU {
     dma_source: u8,
     dma: Option<Dma>,
     dma_requested: Option<(u16, bool)>,
+    cycle_t: usize,
+    /// DIV, TIMA and TMA writes take effect at the end of their M-cycle, unlike
+    /// other writes, which land on its third T-cycle.
+    deferred_timer_write: Option<(u16, u8)>,
     exit_request: bool,
     pub(crate) code_refs: [u8; 0x10000],
     dirty_code: Vec<u16>,
@@ -82,6 +86,8 @@ impl MMU {
             dma_source: 0xFF,
             dma: None,
             dma_requested: None,
+            cycle_t: 0,
+            deferred_timer_write: None,
             exit_request: false,
             code_refs: [0; 0x10000],
             dirty_code: Vec::new(),
@@ -172,16 +178,8 @@ impl MMU {
                     self.serial_bits = 8;
                 }
             }
-            0xFF04 => {
-                let counter = self.timer.counter();
-                self.timer.write_byte(addr, value);
-                if counter & 0x1000 != 0 {
-                    self.apu.step_frame_sequencer();
-                }
-                if (counter as usize + SERIAL_CLOCK_PHASE) & 0x0100 != 0 {
-                    self.clock_serial(1);
-                }
-            }
+            0xFF04..=0xFF06 if self.cycle_t > 0 => self.deferred_timer_write = Some((addr, value)),
+            0xFF04 => self.reset_div(),
             0xFF05..=0xFF07 => self.timer.write_byte(addr, value),
             0xFF0F => self.interupt_flags = value & 0x1F,
             0xFF10..=0xFF3F => self.apu.write(addr, value),
@@ -275,15 +273,24 @@ impl MMU {
         }
     }
 
+    fn ppu_blocked(&self, addr: u16, write: bool) -> bool {
+        match addr {
+            0x8000..=0x9FFF => !self.ppu.vram_accessible(),
+            0xFE00..=0xFE9F if write => !self.ppu.oam_writable(),
+            0xFE00..=0xFE9F => !self.ppu.oam_readable(),
+            _ => false,
+        }
+    }
+
     pub fn cpu_read(&self, addr: u16) -> u8 {
-        if self.bus_blocked(addr) {
+        if self.bus_blocked(addr) || self.ppu_blocked(addr, false) {
             return 0xFF;
         }
         self.read_byte(addr)
     }
 
     pub fn cpu_write(&mut self, addr: u16, value: u8) {
-        if self.bus_blocked(addr) {
+        if self.bus_blocked(addr) || self.ppu_blocked(addr, true) {
             return;
         }
         self.write_byte(addr, value);
@@ -318,22 +325,56 @@ impl MMU {
         self.copy_dma_byte();
     }
 
+    /// Finishes an M-cycle that `begin_cycle` started, then advances by
+    /// `m_cycles` more.
     pub fn tick(&mut self, mut m_cycles: usize) {
+        self.finish_cycle();
         while m_cycles > 0 && self.dma_active() {
             self.step_dma();
-            self.tick_components(1);
+            self.tick_components(4);
             m_cycles -= 1;
         }
         if m_cycles > 0 {
-            self.tick_components(m_cycles);
+            self.tick_components(m_cycles * 4);
         }
     }
 
-    fn tick_components(&mut self, m_cycles: usize) {
-        let t_cycles = m_cycles * 4;
-        let start = self.timer.cycle_counter() as usize;
+    /// Starts a new M-cycle and runs its first `t_cycles` T-cycles, which is
+    /// where a CPU write lands. The next `tick` finishes the cycle.
+    pub fn begin_cycle(&mut self, t_cycles: usize) {
+        self.finish_cycle();
+        if self.dma_active() {
+            self.step_dma();
+        }
+        self.tick_components(t_cycles);
+        self.cycle_t = t_cycles;
+    }
+
+    fn reset_div(&mut self) {
+        let counter = self.timer.counter();
+        self.timer.write_byte(0xFF04, 0);
+        if counter & 0x1000 != 0 {
+            self.apu.step_frame_sequencer();
+        }
+        if (counter as usize + SERIAL_CLOCK_PHASE) & 0x0100 != 0 {
+            self.clock_serial(1);
+        }
+    }
+
+    pub fn finish_cycle(&mut self) {
+        if self.cycle_t > 0 {
+            self.tick_components(4 - self.cycle_t);
+            self.cycle_t = 0;
+            if let Some((addr, value)) = self.deferred_timer_write.take() {
+                self.write_byte(addr, value);
+            }
+        }
+    }
+
+    fn tick_components(&mut self, t_cycles: usize) {
+        let start = self.timer.counter() as usize;
         let mut counter = start;
-        if self.timer.tick(m_cycles) {
+        if self.timer.tick(t_cycles) {
             self.interupt_flags |= TIMER_INTERRUPT;
         }
         self.interupt_flags |= self.ppu.tick(t_cycles);
@@ -374,7 +415,7 @@ impl MMU {
             m_cycles = m_cycles.min(self.timer.m_cycles_until_overflow());
         }
         if enabled & SERIAL_INTERRUPT != 0 && self.serial_bits > 0 {
-            let counter = self.timer.cycle_counter() as usize + SERIAL_CLOCK_PHASE;
+            let counter = self.timer.counter() as usize + SERIAL_CLOCK_PHASE;
             let t_cycles = SERIAL_CLOCK_PERIOD - counter % SERIAL_CLOCK_PERIOD
                 + (self.serial_bits as usize - 1) * SERIAL_CLOCK_PERIOD;
             m_cycles = m_cycles.min(t_cycles.div_ceil(4));

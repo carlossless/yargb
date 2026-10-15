@@ -11,8 +11,8 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Module, default_libcall_names};
 
-use crate::cpu::{CPU, lands_before_tick};
-use crate::mmu::{MMU, is_io, needs_sync_on_write};
+use crate::cpu::{CPU, WRITE_T};
+use crate::mmu::{MMU, needs_sync};
 use crate::registers::Registers;
 
 const MAX_BLOCK_INSTRUCTIONS: u32 = 64;
@@ -323,7 +323,7 @@ fn instruction_length(op: u8) -> u32 {
 extern "C" fn jit_read(cpu: *mut CPU, addr: u32) -> u32 {
     let cpu = unsafe { &mut *cpu };
     let addr = addr as u16;
-    if is_io(addr) {
+    if needs_sync(addr) {
         cpu.sync_jit_hardware();
     }
     cpu.mmu.cpu_read(addr) as u32
@@ -332,11 +332,11 @@ extern "C" fn jit_read(cpu: *mut CPU, addr: u32) -> u32 {
 extern "C" fn jit_write(cpu: *mut CPU, addr: u32, value: u32) -> u32 {
     let cpu = unsafe { &mut *cpu };
     let addr = addr as u16;
-    if lands_before_tick(addr) {
+    if needs_sync(addr) {
         cpu.jit_ticks -= 1;
-    }
-    if needs_sync_on_write(addr) {
         cpu.sync_jit_hardware();
+        cpu.mmu.begin_cycle(WRITE_T);
+        cpu.jit_synced += 1;
     }
     cpu.mmu.cpu_write(addr, value as u8);
     cpu.mmu.take_exit_request() as u32
@@ -1321,6 +1321,13 @@ mod tests {
                 return;
             }
             let start = jitted.regs;
+            let start_ppu = format!(
+                "{} IE {:02X} IF {:02X} budget {}",
+                jitted.mmu.ppu.describe(),
+                jitted.mmu.read_byte(0xFFFF),
+                jitted.mmu.read_byte(0xFF0F),
+                jitted.mmu.m_cycles_until_event()
+            );
             let result = jit.step(&mut jitted);
             let ticks: usize = (0..result.instructions).map(|_| interpreted.cycle()).sum();
             let memory_differs = interpreted.mmu.apu.take_samples()
@@ -1331,11 +1338,14 @@ mod tests {
                     "diverged at step {step} after {} instructions from {start:?}\n\
                      ticks: interpreter {ticks}, jit {}, memory differs: {memory_differs}\n\
                      interpreter: {:?}\n\
-                     jit:         {:?}",
+                     jit:         {:?}\n\
+                     hardware at start: {start_ppu}\n\
+                     hardware now: {}",
                     result.instructions,
                     result.ticks,
                     state(&interpreted),
                     state(&jitted),
+                    jitted.mmu.ppu.describe(),
                 );
             }
         }
@@ -1525,7 +1535,11 @@ mod tests {
 
     #[test]
     fn matches_interpreter_on_random_programs() {
-        for seed in 0..40 {
+        let seeds = std::env::var("YARGB_FUZZ_SEEDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(40);
+        for seed in 0..seeds {
             let (rom, end) = random_rom(seed);
             for hot_threshold in [0, 3] {
                 assert_lockstep(&rom, hot_threshold, 200_000, Some(end));
