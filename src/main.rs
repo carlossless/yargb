@@ -8,6 +8,7 @@ mod gpu;
 mod mbc;
 mod mmu;
 mod registers;
+mod timer;
 mod utils;
 
 use crate::cpu::CPU;

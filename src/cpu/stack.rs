@@ -47,7 +47,7 @@ impl CPU {
 
     pub fn stack_reti(&mut self) -> usize {
         self.regs.pc = self.stack_pop();
-        self.regs.ime = false; // FIXME: should be set to the pre-interrupt value
+        self.regs.ime = true;
         return 4;
     }
 

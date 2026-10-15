@@ -161,7 +161,7 @@ impl CPU {
         let result = value.wrapping_sub(1);
         self.regs.set_flag(Z, result == 0);
         self.regs.set_flag(N, true);
-        self.regs.set_flag(H, (*value & 0x0F) == 0x0F);
+        self.regs.set_flag(H, (*value & 0x0F) == 0x00);
         *value = result;
     }
 
@@ -191,7 +191,7 @@ impl CPU {
         let result = lhs.wrapping_add(rhs);
         self.regs.set_flag(N, false);
         self.regs
-            .set_flag(H, ((lhs & 0x07FF) + (rhs & 0x07FF)) > 0x07FF);
+            .set_flag(H, ((lhs & 0x0FFF) + (rhs & 0x0FFF)) > 0x0FFF);
         self.regs.set_flag(C, lhs > 0xFFFF - rhs);
         result
     }
@@ -212,13 +212,8 @@ impl CPU {
         self.regs.set_flag(N, false);
         self.regs
             .set_flag(H, ((lhs & 0x0F) + (rhs & 0x0F)).wrapping_add(carry) > 0x0F);
-        let carria = if 0xFF - rhs != 0 {
-            lhs > 0xFF - rhs - carry
-        } else {
-            carry == 1
-        };
-        self.regs.set_flag(C, carria);
-
+        self.regs
+            .set_flag(C, lhs as u16 + rhs as u16 + carry as u16 > 0xFF);
         result
     }
 
@@ -233,7 +228,7 @@ impl CPU {
 
     pub fn alu_sub_byte_with_carry(&mut self, lhs: u8, rhs: u8) -> u8 {
         let carry = if self.regs.get_flag(C) { 1 } else { 0 };
-        let result = lhs.wrapping_add(rhs).wrapping_add(carry);
+        let result = lhs.wrapping_sub(rhs).wrapping_sub(carry);
         self.regs.set_flag(Z, result == 0);
         self.regs.set_flag(N, true);
         self.regs

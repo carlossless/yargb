@@ -3,13 +3,16 @@ use crate::mbc::MBC;
 use crate::mbc::nullmbc::NULLMBC;
 
 use crate::mbc::mbc1::MBC1;
+use crate::timer::Timer;
+
+const TIMER_INTERRUPT: u8 = 1 << 2;
 
 pub struct MMU {
     mbc: Box<dyn MBC>,
     gpu: GPU,
     work_ram: [u8; 0x2000],
     high_ram: [u8; 0x7F],
-    timer_stub: [u8; 0x0004],
+    timer: Timer,
     interupt_flags: u8,
     interupt_enable: u8,
     sound_flags: u8,
@@ -54,7 +57,7 @@ impl MMU {
             gpu: GPU::new(),
             work_ram: [0; 0x2000],
             high_ram: [0; 0x7F],
-            timer_stub: [0; 0x0004],
+            timer: Timer::new(),
             interupt_flags: 0x00,
             interupt_enable: 0x00,
             sound_flags: 0xF1, //0xF0 for SGB
@@ -82,8 +85,8 @@ impl MMU {
                 println!("read serial_clock");
                 0x00
             }
-            0xFF04..=0xFF07 => self.timer_stub[(addr - 0xFF04) as usize],
-            0xFF0F => self.interupt_flags,
+            0xFF04..=0xFF07 => self.timer.read_byte(addr),
+            0xFF0F => self.interupt_flags | 0xE0,
             0xFF24 => self.channel_control,
             0xFF25 => self.sound_output,
             0xFF26 => self.sound_flags,
@@ -128,9 +131,13 @@ impl MMU {
                 eprint!("{:}", value as char);
             }
             0xFF02 => println!("serial_clock {:#2X}", value),
-            0xFF04..=0xFF07 => self.timer_stub[(addr - 0xFF04) as usize] = value,
+            0xFF04..=0xFF07 => {
+                if self.timer.write_byte(addr, value) {
+                    self.interupt_flags |= TIMER_INTERRUPT;
+                }
+            }
             0xFF0F => {
-                self.interupt_flags = value;
+                self.interupt_flags = value & 0x1F;
                 println!("write interupt_flags {:b}", value);
             }
             0xFF11 => {
@@ -194,6 +201,24 @@ impl MMU {
             }
             other => panic!("MMU write for {:2X} is not implemented", other),
         }
+    }
+
+    pub fn tick(&mut self, m_cycles: usize) {
+        if self.timer.tick(m_cycles) {
+            self.interupt_flags |= TIMER_INTERRUPT;
+        }
+    }
+
+    pub fn m_cycles_until_event(&self) -> usize {
+        self.timer.m_cycles_until_overflow()
+    }
+
+    pub fn pending_interrupts(&self) -> u8 {
+        self.interupt_flags & self.interupt_enable & 0x1F
+    }
+
+    pub fn acknowledge_interrupt(&mut self, bit: u32) {
+        self.interupt_flags &= !(1 << bit);
     }
 
     pub fn write_word(&mut self, addr: u16, value: u16) {

@@ -17,6 +17,7 @@ pub struct CPU {
     regs: Registers,
     mmu: MMU,
     pub halted: bool,
+    ime_delay: u8,
 }
 
 struct Operation {
@@ -388,7 +389,7 @@ impl CPU {
             cpu.regs.a = cpu.alu_and(a, value);
             2
         }),
-        dop!("AND A,A", &alu_xor!(a, a)),
+        dop!("AND A,A", &alu_and!(a, a)),
         dop!("XOR A,B", &alu_xor!(a, b)),
         dop!("XOR A,C", &alu_xor!(a, c)),
         dop!("XOR A,D", &alu_xor!(a, d)),
@@ -852,11 +853,43 @@ impl CPU {
             regs: Registers::new(),
             mmu: MMU::new(rom_data),
             halted: false,
+            ime_delay: 0,
         }
     }
 
     pub fn cycle(&mut self) -> usize {
-        self.process()
+        let ticks = if self.halted { 1 } else { self.process() };
+        self.retire(ticks)
+    }
+
+    fn retire(&mut self, ticks: usize) -> usize {
+        if self.ime_delay > 0 {
+            self.ime_delay -= 1;
+            if self.ime_delay == 0 {
+                self.regs.ime = true;
+            }
+        }
+        self.mmu.tick(ticks);
+        ticks + self.service_interrupts()
+    }
+
+    fn service_interrupts(&mut self) -> usize {
+        let pending = self.mmu.pending_interrupts();
+        if pending == 0 {
+            return 0;
+        }
+        self.halted = false;
+        if !self.regs.ime {
+            return 0;
+        }
+        let bit = pending.trailing_zeros();
+        self.regs.ime = false;
+        self.mmu.acknowledge_interrupt(bit);
+        let pc = self.regs.pc;
+        self.stack_push(pc);
+        self.regs.pc = 0x40 + 8 * bit as u16;
+        self.mmu.tick(5);
+        5
     }
 
     fn process(&mut self) -> usize {
@@ -937,15 +970,14 @@ impl CPU {
 
     fn enable_interupts(&mut self) -> usize {
         println!("enable_interupts");
-        self.regs.ime = true;
-        // TODO: enable interupts only an instruction later
+        self.ime_delay = 2;
         1
     }
 
     fn disable_interupts(&mut self) -> usize {
         println!("disable_interupts");
         self.regs.ime = false;
-        // TODO: disable interupts only an instruction later
+        self.ime_delay = 0;
         1
     }
 
@@ -955,7 +987,9 @@ impl CPU {
     }
 
     fn halt(&mut self) -> usize {
-        println!("HALT not implemented");
+        if self.regs.ime || self.mmu.pending_interrupts() == 0 {
+            self.halted = true;
+        }
         1
     }
 
