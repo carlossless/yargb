@@ -122,7 +122,20 @@ impl Registers {
     pub fn one_line_rep(&self) -> String {
         format!(
             "A:{:02X} F:{:02X} B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} SP:{:04X} PC:{:04X} Z:{} N:{} H:{} C:{}",
-            self.a, self.f, self.b, self.c, self.d, self.e, self.h, self.l, self.sp, self.pc, self.get_flag(Flag::Z), self.get_flag(Flag::N), self.get_flag(Flag::H), self.get_flag(Flag::C)
+            self.a,
+            self.f,
+            self.b,
+            self.c,
+            self.d,
+            self.e,
+            self.h,
+            self.l,
+            self.sp,
+            self.pc,
+            self.get_flag(Flag::Z),
+            self.get_flag(Flag::N),
+            self.get_flag(Flag::H),
+            self.get_flag(Flag::C)
         )
     }
 }

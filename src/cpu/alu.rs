@@ -1,7 +1,7 @@
 use std::result;
 
-use cpu::CPU;
-use registers::Flag::{C, H, N, Z};
+use crate::cpu::CPU;
+use crate::registers::Flag::{C, H, N, Z};
 
 macro_rules! alu_inc_byte {
     ($register:ident) => {

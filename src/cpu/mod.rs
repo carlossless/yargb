@@ -1,6 +1,6 @@
-use mmu::MMU;
-use registers::Registers;
-use registers::WordRegister::{BC, DE, HL, SP};
+use crate::mmu::MMU;
+use crate::registers::Registers;
+use crate::registers::WordRegister::{BC, DE, HL, SP};
 // use utils::format::FormatAsSigned;
 
 #[macro_use]

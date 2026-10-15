@@ -1,4 +1,4 @@
-use mbc::MBC;
+use crate::mbc::MBC;
 
 pub struct NULLMBC {
     rom: Vec<u8>,

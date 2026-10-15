@@ -2,7 +2,8 @@
 name = "yargb"
 version = "0.1.0"
 authors = ["Karolis Stasaitis <contact@carlossless.io>"]
+edition = "2024"
 
 [dependencies]
-num = "*"
-sdl2 = "0.37.0"
+num = "0.4"
+sdl2 = "0.38.0"

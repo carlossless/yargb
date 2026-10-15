@@ -1,5 +1,5 @@
-use cpu::CPU;
-use registers::Flag::{C, Z};
+use crate::cpu::CPU;
+use crate::registers::Flag::{C, Z};
 
 macro_rules! stack_rst {
     ($addr:expr) => {
@@ -126,7 +126,8 @@ impl CPU {
 
     pub fn stack_push(&mut self, value: u16) {
         self.regs.sp -= 1;
-        self.mmu.write_byte(self.regs.sp, ((value >> 8) & 0xff) as u8);
+        self.mmu
+            .write_byte(self.regs.sp, ((value >> 8) & 0xff) as u8);
         self.regs.sp -= 1;
         self.mmu.write_byte(self.regs.sp, (value & 0xff) as u8);
     }

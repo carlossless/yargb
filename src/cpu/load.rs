@@ -1,4 +1,4 @@
-use cpu::CPU;
+use crate::cpu::CPU;
 // use registers::Flag::{C, H, N, Z};
 
 macro_rules! load {

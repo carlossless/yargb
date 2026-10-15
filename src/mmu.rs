@@ -1,6 +1,6 @@
-use gpu::GPU;
-use mbc::nullmbc::NULLMBC;
-use mbc::MBC;
+use crate::gpu::GPU;
+use crate::mbc::MBC;
+use crate::mbc::nullmbc::NULLMBC;
 
 use crate::mbc::mbc1::MBC1;
 

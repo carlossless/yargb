@@ -1,5 +1,5 @@
-use cpu::CPU;
-use registers::Flag::{C, Z};
+use crate::cpu::CPU;
+use crate::registers::Flag::{C, Z};
 
 impl CPU {
     pub fn jump_nz(&mut self, addr: u16) -> usize {

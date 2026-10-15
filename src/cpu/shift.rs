@@ -1,5 +1,5 @@
-use cpu::CPU;
-use registers::Flag::{C, H, N, Z};
+use crate::cpu::CPU;
+use crate::registers::Flag::{C, H, N, Z};
 
 macro_rules! rlc {
     ($source_register:ident) => {
@@ -188,7 +188,7 @@ macro_rules! sra_hl {
 macro_rules! bit {
     ($i:expr,$source_register:ident) => {
         |cpu: &mut CPU| {
-            use registers::Flag::{H, N, Z};
+            use crate::registers::Flag::{H, N, Z};
             let x = cpu.regs.$source_register;
             cpu.regs.set_flag(Z, (x & (1 << $i)) == 0);
             cpu.regs.set_flag(N, false);
@@ -201,7 +201,7 @@ macro_rules! bit {
 macro_rules! bit_hl {
     ($i:expr) => {
         |cpu: &mut CPU| {
-            use registers::Flag::{H, N, Z};
+            use crate::registers::Flag::{H, N, Z};
             let addr = cpu.regs.get_hl();
             let x = cpu.mmu.read_byte(addr);
             cpu.regs.set_flag(Z, (x & (1 << $i)) == 0);

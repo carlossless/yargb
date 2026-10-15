@@ -10,7 +10,7 @@ mod mmu;
 mod registers;
 mod utils;
 
-use cpu::CPU;
+use crate::cpu::CPU;
 use std::fs::File;
 use std::io::prelude::*;
 

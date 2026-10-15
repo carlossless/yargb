@@ -1,9 +1,15 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     utils.url = "github:numtide/flake-utils";
-    naersk.url = "github:nix-community/naersk";
-    rust-overlay.url = "github:oxalica/rust-overlay";
+    naersk = {
+      url = "github:nix-community/naersk";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = { self, nixpkgs, utils, naersk, rust-overlay }:
@@ -33,9 +39,7 @@
           udev
         ]) ++
         (lib.optionals (stdenv.hostPlatform.isDarwin) [
-          darwin.apple_sdk.frameworks.IOKit
-          darwin.apple_sdk.frameworks.AppKit
-          iconv
+          libiconv
         ]);
       in
       {
@@ -44,7 +48,7 @@
         packages = {
           # For `nix build` `nix run`, & `nix profile install`:
           default = naersk'.buildPackage rec {
-            pname = "sinowealth-kb-tool";
+            pname = "yargb";
             version = "latest";
 
             src = ./.;
