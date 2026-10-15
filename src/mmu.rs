@@ -7,11 +7,15 @@ use crate::timer::Timer;
 
 const TIMER_INTERRUPT: u8 = 1 << 2;
 
+pub fn is_io(addr: u16) -> bool {
+    matches!(addr, 0xFF00..=0xFF7F | 0xFFFF)
+}
+
 pub struct MMU {
     mbc: Box<dyn MBC>,
     gpu: GPU,
-    work_ram: [u8; 0x2000],
-    high_ram: [u8; 0x7F],
+    pub(crate) work_ram: [u8; 0x2000],
+    pub(crate) high_ram: [u8; 0x7F],
     timer: Timer,
     interupt_flags: u8,
     interupt_enable: u8,
@@ -20,6 +24,9 @@ pub struct MMU {
     channel_control: u8,
     lcd_control: u8,
     unused_io: [u8; 0x0034],
+    exit_request: bool,
+    pub(crate) code_refs: [u8; 0x10000],
+    dirty_code: Vec<u16>,
 }
 
 impl MMU {
@@ -65,6 +72,9 @@ impl MMU {
             channel_control: 0x00,
             lcd_control: 0x00,
             unused_io: [0; 0x0034],
+            exit_request: false,
+            code_refs: [0; 0x10000],
+            dirty_code: Vec::new(),
         }
     }
 
@@ -113,6 +123,13 @@ impl MMU {
     }
 
     pub fn write_byte(&mut self, addr: u16, value: u8) {
+        if is_io(addr) || addr < 0x8000 {
+            self.exit_request = true;
+        }
+        if self.code_refs[addr as usize] != 0 {
+            self.exit_request = true;
+            self.dirty_code.push(addr);
+        }
         match addr {
             0x0000..=0x7FFF => self.mbc.write_rom(addr, value),
             0x8000..=0x9FFF => self.gpu.write_byte(addr - 0x8000, value),
@@ -201,6 +218,45 @@ impl MMU {
             }
             other => panic!("MMU write for {:2X} is not implemented", other),
         }
+    }
+
+    pub fn rom_offset(&self, addr: u16) -> usize {
+        self.mbc.rom_offset(addr)
+    }
+
+    pub fn take_exit_request(&mut self) -> bool {
+        std::mem::take(&mut self.exit_request)
+    }
+
+    pub fn track_code(&mut self, range: std::ops::Range<usize>) {
+        for refs in &mut self.code_refs[range] {
+            *refs += 1;
+        }
+    }
+
+    pub fn untrack_code(&mut self, range: std::ops::Range<usize>) {
+        for refs in &mut self.code_refs[range] {
+            *refs -= 1;
+        }
+    }
+
+    pub fn take_dirty_code(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.dirty_code)
+    }
+
+    #[cfg(test)]
+    pub fn same_state(&self, other: &MMU) -> bool {
+        let registers = |mmu: &MMU| {
+            (0xFF04..=0xFF07)
+                .map(|addr| mmu.timer.read_byte(addr))
+                .collect::<Vec<_>>()
+        };
+        self.work_ram == other.work_ram
+            && self.high_ram == other.high_ram
+            && self.gpu.video_ram() == other.gpu.video_ram()
+            && registers(self) == registers(other)
+            && (self.interupt_flags, self.interupt_enable)
+                == (other.interupt_flags, other.interupt_enable)
     }
 
     pub fn tick(&mut self, m_cycles: usize) {

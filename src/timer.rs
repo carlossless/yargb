@@ -32,24 +32,37 @@ impl Timer {
         self.enabled() && (self.counter >> self.tima_bit()) & 1 != 0
     }
 
-    fn increment_tima(&mut self) -> bool {
-        let (tima, overflow) = self.tima.overflowing_add(1);
-        self.tima = if overflow { self.tma } else { tima };
+    fn increment_tima(&mut self, mut increments: usize) -> bool {
+        let mut overflow = false;
+        while increments > 0 {
+            let room = 0x100 - self.tima as usize;
+            if increments < room {
+                self.tima += increments as u8;
+                break;
+            }
+            increments -= room;
+            self.tima = self.tma;
+            overflow = true;
+        }
         overflow
     }
 
-    fn set_counter(&mut self, counter: u16) -> bool {
+    fn falling_edge(&mut self, update: impl FnOnce(&mut Timer)) -> bool {
         let before = self.tima_signal();
-        self.counter = counter;
-        before && !self.tima_signal() && self.increment_tima()
+        update(self);
+        before && !self.tima_signal() && self.increment_tima(1)
     }
 
     pub fn tick(&mut self, m_cycles: usize) -> bool {
-        let mut interrupt = false;
-        for _ in 0..m_cycles {
-            interrupt |= self.set_counter(self.counter.wrapping_add(4));
+        let t_cycles = m_cycles * 4;
+        let start = self.counter as usize;
+        self.counter = (start + t_cycles) as u16;
+        if !self.enabled() {
+            return false;
         }
-        interrupt
+        let period = 2usize << self.tima_bit();
+        let edges = (start + t_cycles) / period - start / period;
+        self.increment_tima(edges)
     }
 
     pub fn m_cycles_until_overflow(&self) -> usize {
@@ -73,7 +86,7 @@ impl Timer {
 
     pub fn write_byte(&mut self, addr: u16, value: u8) -> bool {
         match addr {
-            0xFF04 => self.set_counter(0),
+            0xFF04 => self.falling_edge(|timer| timer.counter = 0),
             0xFF05 => {
                 self.tima = value;
                 false
@@ -82,11 +95,7 @@ impl Timer {
                 self.tma = value;
                 false
             }
-            _ => {
-                let before = self.tima_signal();
-                self.tac = value & 0x07;
-                before && !self.tima_signal() && self.increment_tima()
-            }
+            _ => self.falling_edge(|timer| timer.tac = value & 0x07),
         }
     }
 }

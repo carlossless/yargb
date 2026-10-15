@@ -3,6 +3,7 @@ use crate::registers::Registers;
 use crate::registers::WordRegister::{BC, DE, HL, SP};
 // use utils::format::FormatAsSigned;
 
+pub mod jit;
 #[macro_use]
 mod load;
 #[macro_use]
@@ -17,7 +18,11 @@ pub struct CPU {
     regs: Registers,
     mmu: MMU,
     pub halted: bool,
+    pub trace: bool,
     ime_delay: u8,
+    jit_ticks: u32,
+    jit_synced: u32,
+    jit_budget: u32,
 }
 
 struct Operation {
@@ -853,7 +858,11 @@ impl CPU {
             regs: Registers::new(),
             mmu: MMU::new(rom_data),
             halted: false,
+            trace: false,
             ime_delay: 0,
+            jit_ticks: 0,
+            jit_synced: 0,
+            jit_budget: 0,
         }
     }
 
@@ -871,6 +880,11 @@ impl CPU {
         }
         self.mmu.tick(ticks);
         ticks + self.service_interrupts()
+    }
+
+    fn sync_jit_timer(&mut self) {
+        self.mmu.tick((self.jit_ticks - self.jit_synced) as usize);
+        self.jit_synced = self.jit_ticks;
     }
 
     fn service_interrupts(&mut self) -> usize {
@@ -896,58 +910,38 @@ impl CPU {
         let regs = self.regs;
         let op_code = self.fetch_byte();
         let op = &CPU::OPS[op_code as usize];
-        if op.size == 3 {
-            let arg = self.mmu.read_word(self.regs.pc);
+        if self.trace {
             println!(
-                "OP: {:#04X} {:20} {:#06X} {:}",
+                "OP: {:#04X} {:20} {:>6} {:}",
                 op_code,
                 op.mneumonic,
-                arg,
-                regs.one_line_rep()
-            );
-        } else if op.size == 2 {
-            let arg = self.mmu.read_byte(self.regs.pc);
-            println!(
-                "OP: {:#04X} {:20}   {:#04X} {:}",
-                op_code,
-                op.mneumonic,
-                arg,
-                regs.one_line_rep()
-            );
-        } else {
-            println!(
-                "OP: {:#04X} {:20}        {:}",
-                op_code,
-                op.mneumonic,
+                self.trace_operand(op),
                 regs.one_line_rep()
             );
         }
-        let op_impl = op.execute;
-
-        let ticks = op_impl(self);
-
-        return ticks;
+        (op.execute)(self)
     }
 
     fn process_cb(&mut self) -> usize {
         let op_code = self.fetch_byte();
         let op = &CPU::CB_OPS[op_code as usize];
-
-        if op.size == 3 {
-            let arg = self.mmu.read_word(self.regs.pc);
-            println!("CB OP: {:#04X} {:20} {:#06X}", op_code, op.mneumonic, arg);
-        } else if op.size == 2 {
-            let arg = self.mmu.read_byte(self.regs.pc);
-            println!("CB OP: {:#04X} {:20}   {:#04X}", op_code, op.mneumonic, arg);
-        } else {
-            println!("CB OP: {:#04X} {:20}", op_code, op.mneumonic);
+        if self.trace {
+            println!(
+                "CB OP: {:#04X} {:20} {:>6}",
+                op_code,
+                op.mneumonic,
+                self.trace_operand(op)
+            );
         }
+        (op.execute)(self)
+    }
 
-        let op_impl = op.execute;
-
-        let ticks = op_impl(self);
-
-        return ticks;
+    fn trace_operand(&self, op: &Operation) -> String {
+        match op.size {
+            3 => format!("{:#06X}", self.mmu.read_word(self.regs.pc)),
+            2 => format!("{:#04X}", self.mmu.read_byte(self.regs.pc)),
+            _ => String::new(),
+        }
     }
 
     fn fetch_byte(&mut self) -> u8 {

@@ -14,6 +14,10 @@ impl MBC for NULLMBC {
     fn read_rom(&self, addr: u16) -> u8 {
         self.rom[addr as usize]
     }
+    fn rom_offset(&self, addr: u16) -> usize {
+        addr as usize
+    }
+
     fn write_rom(&mut self, addr: u16, _value: u8) {
         panic!(
             "Attempted to write to read-only memory at address {:#06X}",

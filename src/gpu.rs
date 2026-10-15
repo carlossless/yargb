@@ -15,6 +15,11 @@ impl GPU {
         }
     }
 
+    #[cfg(test)]
+    pub fn video_ram(&self) -> &[u8] {
+        &self.video_ram
+    }
+
     pub fn read_byte(&self, addr: u16) -> u8 {
         self.video_ram[addr as usize]
     }
