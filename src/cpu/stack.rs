@@ -1,54 +1,47 @@
-use crate::cpu::CPU;
+use crate::cpu::Cpu;
 use crate::registers::Flag::{C, Z};
 
 macro_rules! stack_rst {
     ($addr:expr) => {
-        |cpu: &mut CPU| cpu.stack_rst($addr)
+        |cpu: &mut Cpu| cpu.stack_rst($addr)
     };
 }
 
-impl CPU {
-    pub fn stack_ret_nz(&mut self) -> usize {
-        if !self.regs.get_flag(Z) {
+impl Cpu {
+    fn stack_ret_if(&mut self, condition: bool) -> usize {
+        self.internal();
+        if condition {
             self.regs.pc = self.stack_pop();
             return 5;
         }
         2
+    }
+
+    pub fn stack_ret_nz(&mut self) -> usize {
+        self.stack_ret_if(!self.regs.get_flag(Z))
     }
 
     pub fn stack_ret_nc(&mut self) -> usize {
-        if !self.regs.get_flag(C) {
-            self.regs.pc = self.stack_pop();
-            return 5;
-        }
-        2
+        self.stack_ret_if(!self.regs.get_flag(C))
     }
 
     pub fn stack_ret_z(&mut self) -> usize {
-        if self.regs.get_flag(Z) {
-            self.regs.pc = self.stack_pop();
-            return 5;
-        }
-        2
+        self.stack_ret_if(self.regs.get_flag(Z))
     }
 
     pub fn stack_ret_c(&mut self) -> usize {
-        if self.regs.get_flag(C) {
-            self.regs.pc = self.stack_pop();
-            return 5;
-        }
-        2
+        self.stack_ret_if(self.regs.get_flag(C))
     }
 
     pub fn stack_ret(&mut self) -> usize {
         self.regs.pc = self.stack_pop();
-        return 4;
+        4
     }
 
     pub fn stack_reti(&mut self) -> usize {
         self.regs.pc = self.stack_pop();
-        self.regs.ime = false; // FIXME: should be set to the pre-interrupt value
-        return 4;
+        self.regs.ime = true;
+        4
     }
 
     pub fn stack_rst(&mut self, addr: u16) -> usize {
@@ -93,10 +86,10 @@ impl CPU {
 
     pub fn stack_pop(&mut self) -> u16 {
         let mut result = 0;
-        result |= self.mmu.read_byte(self.regs.sp) as u16;
-        self.regs.sp += 1;
-        result |= (self.mmu.read_byte(self.regs.sp) as u16) << 8;
-        self.regs.sp += 1;
+        result |= self.read(self.regs.sp) as u16;
+        self.regs.sp = self.regs.sp.wrapping_add(1);
+        result |= (self.read(self.regs.sp) as u16) << 8;
+        self.regs.sp = self.regs.sp.wrapping_add(1);
         result
     }
 
@@ -125,10 +118,14 @@ impl CPU {
     }
 
     pub fn stack_push(&mut self, value: u16) {
-        self.regs.sp -= 1;
-        self.mmu
-            .write_byte(self.regs.sp, ((value >> 8) & 0xff) as u8);
-        self.regs.sp -= 1;
-        self.mmu.write_byte(self.regs.sp, (value & 0xff) as u8);
+        self.internal_at(self.regs.sp);
+        self.push_bytes(value);
+    }
+
+    pub fn push_bytes(&mut self, value: u16) {
+        self.regs.sp = self.regs.sp.wrapping_sub(1);
+        self.write(self.regs.sp, (value >> 8) as u8);
+        self.regs.sp = self.regs.sp.wrapping_sub(1);
+        self.write(self.regs.sp, value as u8);
     }
 }

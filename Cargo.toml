@@ -3,7 +3,16 @@ name = "yargb"
 version = "0.1.0"
 authors = ["Karolis Stasaitis <contact@carlossless.io>"]
 edition = "2024"
+license = "MIT"
 
 [dependencies]
-num = "0.4"
+cranelift-codegen = "0.136.3"
+cranelift-frontend = "0.136.3"
+cranelift-jit = "0.136.3"
+cranelift-module = "0.136.3"
+cranelift-native = "0.136.3"
+png = "0.18.1"
 sdl2 = "0.38.0"
+
+[profile.dev.package."*"]
+opt-level = 3

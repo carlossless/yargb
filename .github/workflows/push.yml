@@ -18,6 +18,8 @@ jobs:
       uses: DeterminateSystems/magic-nix-cache-action@v15
     - name: Lint
       run: nix develop --command cargo fmt -- --check
+    - name: Clippy
+      run: nix develop --command cargo clippy --all-targets -- -D warnings
 
   test:
     runs-on: ubuntu-latest

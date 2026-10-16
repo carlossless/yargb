@@ -1,19 +1,14 @@
-use crate::cpu::CPU;
-// use registers::Flag::{C, H, N, Z};
-
 macro_rules! load {
-    ($source_register:ident, $target_register:ident) => {
-        |cpu: &mut CPU| {
-            cpu.regs.$source_register = cpu.regs.$target_register;
+    ($target:ident, $source:ident) => {
+        |cpu: &mut Cpu| {
+            cpu.regs.$target = cpu.regs.$source;
             1
         }
     };
-    ($source_register:ident) => {
-        |cpu: &mut CPU, value| {
-            cpu.regs.$source_register = value;
+    ($target:ident) => {
+        |cpu: &mut Cpu, value| {
+            cpu.regs.$target = value;
             2
         }
     };
 }
-
-impl CPU {}
