@@ -94,11 +94,10 @@ impl Jit {
             cpu.mmu.take_exit_request();
             cpu.jit_ticks = 0;
             cpu.jit_synced = 0;
-            cpu.jit_budget = if cpu.regs.ime {
-                cpu.mmu.m_cycles_until_event().min(u32::MAX as usize) as u32
-            } else {
-                u32::MAX
-            };
+            cpu.jit_budget = cpu
+                .mmu
+                .m_cycles_until_event(cpu.regs.ime)
+                .min(u32::MAX as usize) as u32;
             let result = unsafe { block(cpu) };
             let instructions = (result >> 32) as usize;
             if instructions > 0 {
@@ -126,6 +125,9 @@ impl Jit {
             || cpu.locked
             || cpu.ime_delay > 0
             || cpu.mmu.dma_active()
+            || cpu.stopped
+            || cpu.mmu.stall_pending()
+            || cpu.regs.ime && cpu.mmu.pending_interrupts() != 0
         {
             return None;
         }
@@ -267,7 +269,8 @@ fn decode(mmu: &MMU, start: u16, end: u32) -> Vec<Decoded> {
 fn ends_block(op: u8) -> bool {
     matches!(
         op,
-        0x18 | 0x20
+        0x10 | 0x18
+            | 0x20
             | 0x28
             | 0x30
             | 0x38
@@ -347,7 +350,12 @@ extern "C" fn jit_interpret(cpu: *mut CPU) -> u32 {
     cpu.sync_jit_hardware();
     let ticks = cpu.process() as u32;
     cpu.jit_synced += ticks;
-    let exit = cpu.mmu.take_exit_request() || cpu.halted || cpu.locked || cpu.mmu.dma_active();
+    let exit = cpu.mmu.take_exit_request()
+        || cpu.halted
+        || cpu.locked
+        || cpu.stopped
+        || cpu.mmu.dma_active()
+        || cpu.mmu.stall_pending();
     ticks | (exit as u32) << 16
 }
 
@@ -629,17 +637,32 @@ impl<'a> Emitter<'a> {
         self.b.ins().iadd(self.cpu, index)
     }
 
-    fn ram_regions(&mut self, addr: Value) -> [(Value, Value, i32); 2] {
+    /// The memory regions accessed without calling into the MMU: WRAM bank 0,
+    /// the switchable WRAM bank at D000 and HRAM. Each entry is the condition
+    /// for `addr` being inside, its index into the backing array and the
+    /// array's offset in the CPU.
+    fn ram_regions(&mut self, addr: Value) -> [(Value, Value, i32); 3] {
         [
-            (0xC000, 0x2000, offset_of!(MMU, work_ram)),
+            (0xC000, 0x1000, offset_of!(MMU, work_ram)),
+            (0xD000, 0x1000, offset_of!(MMU, work_ram)),
             (0xFF80, 0x7F, offset_of!(MMU, high_ram)),
         ]
         .map(|(base, size, field)| {
-            let index = self.b.ins().iadd_imm_s(addr, -base);
+            let mut index = self.b.ins().iadd_imm_s(addr, -base);
             let inside = self
                 .b
                 .ins()
                 .icmp_imm_u(IntCC::UnsignedLessThan, index, size);
+            if base == 0xD000 {
+                let bank_offset = self.b.ins().load(
+                    types::I32,
+                    MemFlagsData::trusted(),
+                    self.cpu,
+                    mmu_offset(offset_of!(MMU, work_ram_bank_offset)),
+                );
+                index = self.b.ins().iadd_imm_s(index, 0x1000);
+                index = self.b.ins().iadd(index, bank_offset);
+            }
             (inside, index, mmu_offset(field))
         })
     }
@@ -1274,8 +1297,8 @@ impl<'a> Emitter<'a> {
                 self.b.def_var(self.sp, hl);
                 self.tick(2);
             }
-            0x76 | 0xD9 | 0xFB | 0xD3 | 0xDB | 0xDD | 0xE3 | 0xE4 | 0xEB | 0xEC | 0xED | 0xF4
-            | 0xFC | 0xFD => return self.interpret_and_exit(pc, n),
+            0x10 | 0x76 | 0xD9 | 0xFB | 0xD3 | 0xDB | 0xDD | 0xE3 | 0xE4 | 0xEB | 0xEC | 0xED
+            | 0xF4 | 0xFC | 0xFD => return self.interpret_and_exit(pc, n),
             0xCB => self.cb(imm8),
             _ => self.interpret(pc),
         }
@@ -1308,14 +1331,29 @@ impl<'a> Emitter<'a> {
 mod tests {
     use super::*;
     use crate::cartridge::Cartridge;
+    use crate::mmu::Model;
 
-    fn assert_lockstep(rom: &[u8], hot_threshold: u16, steps: usize, stop_at: Option<u16>) {
+    fn assert_lockstep(
+        rom: &[u8],
+        model: Model,
+        hot_threshold: u16,
+        steps: usize,
+        stop_at: Option<u16>,
+    ) {
         let rom = rom.to_vec();
-        let mut interpreted = CPU::new(Cartridge::new(rom.clone(), None));
-        let mut jitted = CPU::new(Cartridge::new(rom.clone(), None));
+        let mut interpreted = CPU::new(Cartridge::new(rom.clone(), None), model);
+        let mut jitted = CPU::new(Cartridge::new(rom.clone(), None), model);
         let mut jit = Jit::new(&jitted);
         jit.hot_threshold = hot_threshold;
-        let state = |cpu: &CPU| (cpu.regs, cpu.halted, cpu.halt_bug, cpu.ime_delay);
+        let state = |cpu: &CPU| {
+            (
+                cpu.regs,
+                cpu.halted,
+                cpu.halt_bug,
+                cpu.stopped,
+                cpu.ime_delay,
+            )
+        };
         for step in 0..steps {
             if stop_at == Some(jitted.regs.pc) {
                 return;
@@ -1326,7 +1364,7 @@ mod tests {
                 jitted.mmu.ppu.describe(),
                 jitted.mmu.read_byte(0xFFFF),
                 jitted.mmu.read_byte(0xFF0F),
-                jitted.mmu.m_cycles_until_event()
+                jitted.mmu.m_cycles_until_event(true)
             );
             let result = jit.step(&mut jitted);
             let ticks: usize = (0..result.instructions).map(|_| interpreted.cycle()).sum();
@@ -1355,7 +1393,7 @@ mod tests {
     #[ignore = "needs roms/cpu_instrs.gb"]
     fn matches_interpreter_on_cpu_instrs() {
         let rom = std::fs::read("roms/cpu_instrs.gb").unwrap();
-        assert_lockstep(&rom, 16, 20_000_000, None);
+        assert_lockstep(&rom, Model::Dmg, 16, 20_000_000, None);
     }
 
     struct Rng(u64);
@@ -1481,7 +1519,59 @@ mod tests {
         }
     }
 
-    fn random_rom(seed: u64) -> (Vec<u8>, u16) {
+    const BANKED_ROUTINE: u16 = 0xD800;
+
+    fn cgb_op(rng: &mut Rng) -> Vec<u8> {
+        let [lo, hi] = BANKED_ROUTINE.to_le_bytes();
+        match rng.below(8) {
+            0 => vec![0x3E, rng.below(8) as u8, 0xE0, 0x70],
+            1 => vec![0x3E, rng.below(2) as u8, 0xE0, 0x4F],
+            2 => {
+                let (index_port, data_port) = rng.pick(&[(0x68, 0x69), (0x6A, 0x6B)]);
+                vec![
+                    0x3E,
+                    rng.byte() | 0x80,
+                    0xE0,
+                    index_port,
+                    0x3E,
+                    rng.byte(),
+                    0xE0,
+                    data_port,
+                ]
+            }
+            3 => vec![0xCD, lo, hi],
+            4 => vec![0x3E, rng.pick(&[0x04, 0x14, 0x1D, 0xAF]), 0xEA, lo, hi],
+            5 => {
+                let mode = rng.pick(&[0x00, 0x80]);
+                vec![
+                    0x3E,
+                    0xC0 + rng.below(8) as u8,
+                    0xE0,
+                    0x51,
+                    0x3E,
+                    rng.byte() & 0xF0,
+                    0xE0,
+                    0x52,
+                    0x3E,
+                    rng.below(0x20) as u8,
+                    0xE0,
+                    0x53,
+                    0x3E,
+                    rng.byte() & 0xF0,
+                    0xE0,
+                    0x54,
+                    0x3E,
+                    mode | rng.below(4) as u8,
+                    0xE0,
+                    0x55,
+                ]
+            }
+            6 => vec![0x3E, 0x01, 0xE0, 0x4D, 0x10, 0x00],
+            _ => vec![0x3E, rng.below(2) as u8, 0xE0, 0x6C],
+        }
+    }
+
+    fn random_rom(seed: u64, cgb: bool) -> (Vec<u8>, u16) {
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let mut rom = vec![0u8; 0x8000];
         rom[0x38] = 0xC9;
@@ -1517,13 +1607,25 @@ mod tests {
         for (i, byte) in [0x04, 0x0C, 0xC9].into_iter().enumerate() {
             code.extend([0x3E, byte, 0xEA, ram_lo + i as u8, ram_hi]);
         }
+        if cgb {
+            rom[0x143] = 0x80;
+            let [lo, hi] = BANKED_ROUTINE.to_le_bytes();
+            for bank in 1..=7u8 {
+                code.extend([0x3E, bank, 0xE0, 0x70]);
+                let first = [0x04, 0x0C, 0x14, 0x1C, 0x05, 0x0D, 0x15][bank as usize - 1];
+                for (i, byte) in [first, 0x2C, 0xC9].into_iter().enumerate() {
+                    code.extend([0x3E, byte, 0xEA, lo + i as u8, hi]);
+                }
+            }
+        }
         code.push(0xFB);
         while code.len() < 0x1E00 - CODE_START as usize {
             let at = CODE_START + code.len() as u16;
-            code.extend(match rng.below(3) {
+            code.extend(match rng.below(if cgb { 4 } else { 3 }) {
                 0 => register_op(&mut rng, true),
                 1 => memory_op(&mut rng),
-                _ => control_op(&mut rng, at),
+                2 => control_op(&mut rng, at),
+                _ => cgb_op(&mut rng),
             });
         }
         let end = CODE_START + code.len() as u16;
@@ -1540,9 +1642,14 @@ mod tests {
             .and_then(|v| v.parse().ok())
             .unwrap_or(40);
         for seed in 0..seeds {
-            let (rom, end) = random_rom(seed);
+            let model = if seed % 2 == 0 {
+                Model::Dmg
+            } else {
+                Model::Cgb
+            };
+            let (rom, end) = random_rom(seed, model == Model::Cgb);
             for hot_threshold in [0, 3] {
-                assert_lockstep(&rom, hot_threshold, 200_000, Some(end));
+                assert_lockstep(&rom, model, hot_threshold, 200_000, Some(end));
             }
         }
     }

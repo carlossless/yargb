@@ -7,6 +7,9 @@ const MIN_TRANSFER_DOTS: u32 = 172;
 const LINES: u8 = 154;
 const FRAME_DOTS: u32 = LINE_DOTS * LINES as u32;
 const MAX_LINE_SPRITES: usize = 10;
+/// Dots before line 144 at which a CGB raises the mode 2 STAT interrupt
+/// that the DMG raises together with VBlank.
+const CGB_VBLANK_OAM_LEAD: u32 = 4;
 /// Dots the background fetcher must have spent on its current tile before an
 /// object fetch can take over.
 const SPRITE_FETCH_WAIT: u8 = 4;
@@ -45,6 +48,14 @@ struct ObjPixel {
     color: u8,
     palette: u8,
     behind_bg: bool,
+    oam_index: u8,
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
+struct BgPixel {
+    color: u8,
+    palette: u8,
+    priority: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -61,6 +72,7 @@ struct Fetcher {
     dot: u8,
     column: u8,
     tile: u8,
+    attributes: u8,
     low: u8,
     high: u8,
     window: bool,
@@ -82,6 +94,7 @@ impl Fetcher {
             dot: 0,
             column: 0,
             tile: 0,
+            attributes: 0,
             low: 0,
             high: 0,
             window,
@@ -90,13 +103,27 @@ impl Fetcher {
     }
 }
 
+fn palette_color(palettes: &[u8; 64], palette: u8, color: u8) -> u16 {
+    let index = (palette as usize * 4 + color as usize) * 2;
+    u16::from_le_bytes([palettes[index], palettes[index + 1]]) & 0x7FFF
+}
+
 /// The picture processing unit, emulated dot by dot. Pixels come out of a
 /// background FIFO fed by a tile fetcher, mixed with an object FIFO, so the
 /// length of mode 3 and the effect of mid-line register writes follow from the
 /// fetches the hardware makes.
 #[derive(PartialEq)]
 pub struct Ppu {
-    vram: [u8; 0x2000],
+    cgb: bool,
+    compat: bool,
+    vram: [u8; 0x4000],
+    vram_bank: usize,
+    bg_palettes: [u8; 64],
+    obj_palettes: [u8; 64],
+    bg_palette_index: u8,
+    obj_palette_index: u8,
+    x_priority: bool,
+    hblank_started: bool,
     oam: [u8; 0xA0],
     lcdc: u8,
     stat: u8,
@@ -118,7 +145,7 @@ pub struct Ppu {
     sprites: [Sprite; MAX_LINE_SPRITES],
     sprite_count: usize,
     fetcher: Fetcher,
-    bg_fifo: [u8; 8],
+    bg_fifo: [BgPixel; 8],
     bg_len: u8,
     obj_fifo: [ObjPixel; 8],
     obj_len: u8,
@@ -129,13 +156,37 @@ pub struct Ppu {
     window_drawn: bool,
     window_y_hit: bool,
     first_line: bool,
-    frame: Box<[u8; SCREEN_WIDTH * SCREEN_HEIGHT]>,
+    frame: Box<Frame>,
 }
 
+/// One pixel per screen position: a DMG shade from 0 (lightest) to 3, or a
+/// CGB colour in RGB555.
+pub type Frame = [u16; SCREEN_WIDTH * SCREEN_HEIGHT];
+
 impl Ppu {
-    pub fn new() -> Ppu {
+    /// `compat` is a CGB running a DMG cartridge: DMG rendering, coloured
+    /// through palette RAM.
+    pub fn new(cgb: bool, compat: bool) -> Ppu {
+        let mut bg_palettes = [0xFF; 64];
+        let mut obj_palettes = [0xFF; 64];
+        if compat {
+            let greys = [0x7FFFu16, 0x56B5, 0x294A, 0x0000];
+            let bytes: Vec<u8> = greys.iter().flat_map(|color| color.to_le_bytes()).collect();
+            bg_palettes[..8].copy_from_slice(&bytes);
+            obj_palettes[..8].copy_from_slice(&bytes);
+            obj_palettes[8..16].copy_from_slice(&bytes);
+        }
         Ppu {
-            vram: [0; 0x2000],
+            cgb,
+            compat,
+            vram: [0; 0x4000],
+            vram_bank: 0,
+            bg_palettes,
+            obj_palettes,
+            bg_palette_index: 0,
+            obj_palette_index: 0,
+            x_priority: !cgb,
+            hblank_started: false,
             oam: [0; 0xA0],
             lcdc: 0x91,
             stat: 0,
@@ -157,7 +208,7 @@ impl Ppu {
             sprites: [Sprite::default(); MAX_LINE_SPRITES],
             sprite_count: 0,
             fetcher: Fetcher::new(false, true),
-            bg_fifo: [0; 8],
+            bg_fifo: [BgPixel::default(); 8],
             bg_len: 0,
             obj_fifo: [ObjPixel::default(); 8],
             obj_len: 0,
@@ -172,8 +223,23 @@ impl Ppu {
         }
     }
 
-    pub fn frame(&self) -> &[u8; SCREEN_WIDTH * SCREEN_HEIGHT] {
+    pub fn frame(&self) -> &Frame {
         &self.frame
+    }
+
+    /// Whether frames hold RGB555 colours rather than DMG shades.
+    pub fn renders_color(&self) -> bool {
+        self.cgb || self.compat
+    }
+
+    /// Whether mode 0 began on a visible line since the last call, which is
+    /// when an HBlank DMA copies its next block.
+    pub fn take_hblank_started(&mut self) -> bool {
+        std::mem::take(&mut self.hblank_started)
+    }
+
+    fn blank_color(&self) -> u16 {
+        if self.renders_color() { 0x7FFF } else { 0 }
     }
 
     fn enabled(&self) -> bool {
@@ -214,6 +280,16 @@ impl Ppu {
         }
     }
 
+    /// The mode 2 STAT source also fires once around the start of VBlank, though
+    /// no OAM scan follows.
+    fn oam_interrupt_at_vblank(&self) -> bool {
+        if self.renders_color() {
+            self.ly == SCREEN_HEIGHT as u8 - 1 && self.dot == LINE_DOTS - CGB_VBLANK_OAM_LEAD
+        } else {
+            self.ly == SCREEN_HEIGHT as u8 && self.dot == 0
+        }
+    }
+
     fn update_stat_line(&mut self) -> u8 {
         let mode = self.mode;
         let line = self.stat & STAT_LYC != 0 && self.lyc_match
@@ -221,8 +297,7 @@ impl Ppu {
                 && (self.stat & STAT_HBLANK != 0 && mode == MODE_HBLANK
                     || self.stat & STAT_VBLANK != 0 && mode == MODE_VBLANK
                     || self.stat & STAT_OAM != 0
-                        && (mode == MODE_OAM_SCAN
-                            || self.ly == SCREEN_HEIGHT as u8 && self.dot == 0));
+                        && (mode == MODE_OAM_SCAN || self.oam_interrupt_at_vblank()));
         let rising = line && !self.stat_line;
         self.stat_line = line;
         if rising { STAT_INTERRUPT } else { 0 }
@@ -254,6 +329,7 @@ impl Ppu {
                 self.transfer_dot();
                 if self.lcd_x == SCREEN_WIDTH as i16 {
                     self.mode = MODE_HBLANK;
+                    self.hblank_started = true;
                 }
             }
             _ => {}
@@ -364,7 +440,7 @@ impl Ppu {
             self.fetcher = Fetcher::new(true, false);
             return;
         }
-        let color = self.pop_bg();
+        let background = self.pop_bg();
         if self.lcd_x < 0 {
             self.lcd_x += 1;
             return;
@@ -374,20 +450,59 @@ impl Ppu {
             return;
         }
         let object = self.pop_obj();
-        let bg_color = if self.lcdc & 0x01 != 0 { color } else { 0 };
-        let shade =
-            if object.color != 0 && self.lcdc & 0x02 != 0 && (!object.behind_bg || bg_color == 0) {
-                let palette = if object.palette != 0 {
-                    self.obp1
-                } else {
-                    self.obp0
-                };
-                (palette >> (object.color * 2)) & 3
-            } else {
-                (self.bgp >> (bg_color * 2)) & 3
-            };
-        self.frame[self.ly as usize * SCREEN_WIDTH + self.lcd_x as usize] = shade;
+        let pixel = if self.cgb {
+            self.cgb_pixel(background, object)
+        } else if self.compat {
+            self.compat_pixel(background, object)
+        } else {
+            self.dmg_pixel(background, object).0
+        };
+        self.frame[self.ly as usize * SCREEN_WIDTH + self.lcd_x as usize] = pixel;
         self.lcd_x += 1;
+    }
+
+    /// The DMG shade of a pixel and, if an object supplied it, that object's palette.
+    fn dmg_pixel(&self, background: BgPixel, object: ObjPixel) -> (u16, Option<u8>) {
+        let bg_color = if self.lcdc & 0x01 != 0 {
+            background.color
+        } else {
+            0
+        };
+        if object.color != 0 && self.lcdc & 0x02 != 0 && (!object.behind_bg || bg_color == 0) {
+            let palette = if object.palette != 0 {
+                self.obp1
+            } else {
+                self.obp0
+            };
+            (
+                ((palette >> (object.color * 2)) & 3) as u16,
+                Some(object.palette),
+            )
+        } else {
+            (((self.bgp >> (bg_color * 2)) & 3) as u16, None)
+        }
+    }
+
+    fn compat_pixel(&self, background: BgPixel, object: ObjPixel) -> u16 {
+        match self.dmg_pixel(background, object) {
+            (shade, Some(palette)) => palette_color(&self.obj_palettes, palette, shade as u8),
+            (shade, None) => palette_color(&self.bg_palettes, 0, shade as u8),
+        }
+    }
+
+    /// LCDC bit 0 is the master priority switch on the CGB: when clear, objects
+    /// are drawn over the background regardless of either's priority bits.
+    fn cgb_pixel(&self, background: BgPixel, object: ObjPixel) -> u16 {
+        let object_visible = object.color != 0
+            && self.lcdc & 0x02 != 0
+            && (self.lcdc & 0x01 == 0
+                || background.color == 0
+                || !background.priority && !object.behind_bg);
+        if object_visible {
+            palette_color(&self.obj_palettes, object.palette, object.color)
+        } else {
+            palette_color(&self.bg_palettes, background.palette, background.color)
+        }
     }
 
     fn window_starts_here(&self) -> bool {
@@ -397,10 +512,10 @@ impl Ppu {
             && self.lcd_x + 7 >= self.wx as i16
     }
 
-    fn pop_bg(&mut self) -> u8 {
-        let color = self.bg_fifo[8 - self.bg_len as usize];
+    fn pop_bg(&mut self) -> BgPixel {
+        let pixel = self.bg_fifo[8 - self.bg_len as usize];
         self.bg_len -= 1;
-        color
+        pixel
     }
 
     fn pop_obj(&mut self) -> ObjPixel {
@@ -420,8 +535,14 @@ impl Ppu {
         match fetcher.step {
             FetchStep::Push => {
                 if self.bg_len == 0 {
-                    for (bit, pixel) in (0..8).rev().zip(self.bg_fifo.iter_mut()) {
-                        *pixel = (fetcher.low >> bit) & 1 | ((fetcher.high >> bit) & 1) << 1;
+                    let flip = fetcher.attributes & 0x20 != 0;
+                    for (column, pixel) in self.bg_fifo.iter_mut().enumerate() {
+                        let bit = if flip { column } else { 7 - column };
+                        *pixel = BgPixel {
+                            color: (fetcher.low >> bit) & 1 | ((fetcher.high >> bit) & 1) << 1,
+                            palette: fetcher.attributes & 0x07,
+                            priority: fetcher.attributes & 0x80 != 0,
+                        };
                     }
                     self.bg_len = 8;
                     self.fetcher.step = FetchStep::Tile;
@@ -442,7 +563,13 @@ impl Ppu {
                 self.fetcher.dot = 0;
                 match step {
                     FetchStep::Tile => {
-                        self.fetcher.tile = self.vram[self.tile_map_address()];
+                        let address = self.tile_map_address();
+                        self.fetcher.tile = self.vram[address];
+                        self.fetcher.attributes = if self.cgb {
+                            self.vram[0x2000 + address]
+                        } else {
+                            0
+                        };
                         self.fetcher.step = FetchStep::Low;
                     }
                     FetchStep::Low => {
@@ -490,12 +617,19 @@ impl Ppu {
 
     fn tile_data_address(&self) -> usize {
         let tile = self.fetcher.tile;
+        let attributes = self.fetcher.attributes;
         let base = if self.lcdc & 0x10 != 0 {
             tile as usize * 16
         } else {
             (0x1000 + (tile as i8 as i32) * 16) as usize
         };
-        base + self.tile_row() as usize * 2
+        let bank = if attributes & 0x08 != 0 { 0x2000 } else { 0 };
+        let row = if attributes & 0x40 != 0 {
+            7 - self.tile_row()
+        } else {
+            self.tile_row()
+        };
+        bank + base + row as usize * 2
     }
 
     fn fetch_sprite(&mut self, index: usize) {
@@ -512,8 +646,18 @@ impl Ppu {
         if height == 16 {
             tile = tile & 0xFE | row / 8;
         }
-        let address = tile as usize * 16 + (row % 8) as usize * 2;
+        let bank = if self.cgb && flags & 0x08 != 0 {
+            0x2000
+        } else {
+            0
+        };
+        let address = bank + tile as usize * 16 + (row % 8) as usize * 2;
         let (low, high) = (self.vram[address], self.vram[address + 1]);
+        let palette = if self.cgb {
+            flags & 0x07
+        } else {
+            (flags >> 4) & 1
+        };
 
         while self.obj_len < 8 {
             self.obj_fifo[self.obj_len as usize] = ObjPixel::default();
@@ -528,11 +672,13 @@ impl Ppu {
             };
             let color = (low >> bit) & 1 | ((high >> bit) & 1) << 1;
             let slot = &mut self.obj_fifo[column - skip];
-            if slot.color == 0 && color != 0 {
+            let wins = slot.color == 0 || !self.x_priority && sprite.oam_index < slot.oam_index;
+            if color != 0 && wins {
                 *slot = ObjPixel {
                     color,
-                    palette: (flags >> 4) & 1,
+                    palette,
                     behind_bg: flags & 0x80 != 0,
+                    oam_index: sprite.oam_index,
                 };
             }
         }
@@ -552,6 +698,29 @@ impl Ppu {
         }
     }
 
+    fn dots_until_hblank(&self) -> u32 {
+        let earliest = OAM_SCAN_DOTS + MIN_TRANSFER_DOTS;
+        let first_line_earliest = FIRST_LINE_TRANSFER_DOT + MIN_TRANSFER_DOTS;
+        match self.mode {
+            MODE_TRANSFER => earliest.saturating_sub(self.dot).max(1),
+            MODE_OAM_SCAN => earliest - self.dot,
+            MODE_HBLANK if self.first_line && self.dot < FIRST_LINE_TRANSFER_DOT => {
+                first_line_earliest - self.dot
+            }
+            _ => self.dots_until(self.next_visible_line(), earliest),
+        }
+    }
+
+    /// Dots until mode 0 could next begin on a visible line. It may be early,
+    /// never late.
+    pub fn t_cycles_until_hblank(&self) -> usize {
+        if self.enabled() {
+            self.dots_until_hblank() as usize
+        } else {
+            usize::MAX
+        }
+    }
+
     /// T-cycles until the PPU could next raise one of `enabled` interrupts.
     /// It may be early, never late.
     pub fn t_cycles_until_interrupt(&self, enabled: u8) -> usize {
@@ -567,17 +736,12 @@ impl Ppu {
         if enabled & VBLANK_INTERRUPT != 0 || stat & (STAT_VBLANK | STAT_OAM) != 0 {
             dots = dots.min(self.dots_until(SCREEN_HEIGHT as u8, 0));
         }
+        if stat & STAT_OAM != 0 && self.renders_color() {
+            dots =
+                dots.min(self.dots_until(SCREEN_HEIGHT as u8 - 1, LINE_DOTS - CGB_VBLANK_OAM_LEAD));
+        }
         if stat & STAT_HBLANK != 0 {
-            let earliest = OAM_SCAN_DOTS + MIN_TRANSFER_DOTS;
-            let first_line_earliest = FIRST_LINE_TRANSFER_DOT + MIN_TRANSFER_DOTS;
-            dots = dots.min(match self.mode {
-                MODE_TRANSFER => earliest.saturating_sub(self.dot).max(1),
-                MODE_OAM_SCAN => earliest - self.dot,
-                MODE_HBLANK if self.first_line && self.dot < FIRST_LINE_TRANSFER_DOT => {
-                    first_line_earliest - self.dot
-                }
-                _ => self.dots_until(self.next_visible_line(), earliest),
-            });
+            dots = dots.min(self.dots_until_hblank());
         }
         if stat & STAT_OAM != 0 {
             dots = dots.min(self.dots_until(self.next_visible_line(), 0));
@@ -609,11 +773,55 @@ impl Ppu {
     }
 
     pub fn read_vram(&self, addr: u16) -> u8 {
-        self.vram[addr as usize & 0x1FFF]
+        self.vram[self.vram_bank * 0x2000 + (addr as usize & 0x1FFF)]
     }
 
     pub fn write_vram(&mut self, addr: u16, value: u8) {
-        self.vram[addr as usize & 0x1FFF] = value;
+        self.vram[self.vram_bank * 0x2000 + (addr as usize & 0x1FFF)] = value;
+    }
+
+    fn palettes_accessible(&self) -> bool {
+        self.mode != MODE_TRANSFER && self.visible_mode != MODE_TRANSFER
+    }
+
+    pub fn read_cgb_register(&self, addr: u16) -> u8 {
+        if !self.cgb {
+            return 0xFF;
+        }
+        match addr {
+            0xFF4F => 0xFE | self.vram_bank as u8,
+            0xFF68 => 0x40 | self.bg_palette_index,
+            0xFF6A => 0x40 | self.obj_palette_index,
+            0xFF69 | 0xFF6B if !self.palettes_accessible() => 0xFF,
+            0xFF69 => self.bg_palettes[(self.bg_palette_index & 0x3F) as usize],
+            0xFF6B => self.obj_palettes[(self.obj_palette_index & 0x3F) as usize],
+            0xFF6C => 0xFE | self.x_priority as u8,
+            _ => 0xFF,
+        }
+    }
+
+    pub fn write_cgb_register(&mut self, addr: u16, value: u8) {
+        if !self.cgb {
+            return;
+        }
+        let accessible = self.palettes_accessible();
+        let write_palette = |palettes: &mut [u8; 64], index: &mut u8| {
+            if accessible {
+                palettes[(*index & 0x3F) as usize] = value;
+            }
+            if *index & 0x80 != 0 {
+                *index = 0x80 | (*index + 1) & 0x3F;
+            }
+        };
+        match addr {
+            0xFF4F => self.vram_bank = (value & 1) as usize,
+            0xFF68 => self.bg_palette_index = value & 0xBF,
+            0xFF6A => self.obj_palette_index = value & 0xBF,
+            0xFF69 => write_palette(&mut self.bg_palettes, &mut self.bg_palette_index),
+            0xFF6B => write_palette(&mut self.obj_palettes, &mut self.obj_palette_index),
+            0xFF6C => self.x_priority = value & 1 != 0,
+            _ => {}
+        }
     }
 
     pub fn read_oam(&self, addr: u16) -> u8 {
@@ -664,7 +872,8 @@ impl Ppu {
                     self.window_line = 0;
                     self.window_drawn = false;
                     self.window_y_hit = false;
-                    self.frame.fill(0);
+                    let blank = self.blank_color();
+                    self.frame.fill(blank);
                 } else if !was_enabled && self.enabled() {
                     self.ly = 0;
                     self.dot = LCD_ON_DOT;
@@ -697,7 +906,7 @@ mod tests {
     use super::*;
 
     fn transfer_dots(xs: &[u8], scx: u8) -> u32 {
-        let mut ppu = Ppu::new();
+        let mut ppu = Ppu::new(false, false);
         ppu.lcdc = 0x93;
         ppu.scx = scx;
         for (index, &x) in xs.iter().enumerate() {

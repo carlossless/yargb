@@ -41,11 +41,18 @@ const KEYMAP: [(Scancode, u8); 10] = [
     (Scancode::Space, buttons::START),
 ];
 
-fn to_rgb(frame: &[u8], shades: &[[u8; 3]; 4]) -> Vec<u8> {
-    frame
-        .iter()
-        .flat_map(|&shade| shades[shade as usize])
-        .collect()
+/// Converts a frame to RGB888: DMG shades through `shades`, CGB colours by
+/// widening each 5-bit channel.
+fn to_rgb(emulator: &Emulator, shades: &[[u8; 3]; 4]) -> Vec<u8> {
+    let frame = emulator.frame().iter();
+    if emulator.renders_color() {
+        let widen = |channel: u16| ((channel << 3) | (channel >> 2)) as u8;
+        frame
+            .flat_map(|&color| [color & 0x1F, (color >> 5) & 0x1F, (color >> 10) & 0x1F].map(widen))
+            .collect()
+    } else {
+        frame.flat_map(|&shade| shades[shade as usize]).collect()
+    }
 }
 
 pub fn write_screenshot(emulator: &Emulator, path: &Path) -> Result<(), String> {
@@ -59,7 +66,7 @@ pub fn write_screenshot(emulator: &Emulator, path: &Path) -> Result<(), String> 
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
     writer
-        .write_image_data(&to_rgb(emulator.frame(), &SCREENSHOT_SHADES))
+        .write_image_data(&to_rgb(emulator, &SCREENSHOT_SHADES))
         .map_err(|error| error.to_string())
 }
 
@@ -137,11 +144,7 @@ pub fn run_window(emulator: &mut Emulator, scale: u32, frames: Option<u64>) -> R
         let samples = emulator.take_samples();
 
         texture
-            .update(
-                None,
-                &to_rgb(emulator.frame(), &WINDOW_SHADES),
-                SCREEN_WIDTH * 3,
-            )
+            .update(None, &to_rgb(emulator, &WINDOW_SHADES), SCREEN_WIDTH * 3)
             .map_err(|error| error.to_string())?;
         canvas.clear();
         canvas.copy(&texture, None, None)?;

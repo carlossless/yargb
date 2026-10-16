@@ -44,6 +44,30 @@ pub const DEFAULT_DMG_REGISTERS: Registers = Registers {
     ime: false,
 };
 
+/// The registers the CGB boot ROM leaves for a CGB game. Games check A to
+/// detect a CGB.
+pub const DEFAULT_CGB_REGISTERS: Registers = Registers {
+    a: 0x11,
+    b: 0x00,
+    c: 0x00,
+    d: 0xFF,
+    e: 0x56,
+    h: 0x00,
+    l: 0x0D,
+    f: 0x80,
+    sp: 0xFFFE,
+    pc: 0x0100,
+    ime: false,
+};
+
+/// The registers the CGB boot ROM leaves when it runs a DMG cartridge.
+pub const DEFAULT_CGB_COMPAT_REGISTERS: Registers = Registers {
+    d: 0x00,
+    e: 0x08,
+    l: 0x7C,
+    ..DEFAULT_CGB_REGISTERS
+};
+
 impl Registers {
     pub fn new() -> Registers {
         Registers {

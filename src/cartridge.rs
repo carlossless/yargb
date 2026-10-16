@@ -85,12 +85,14 @@ pub struct Cartridge {
     latch_armed: bool,
     clock_cycles: u64,
     save_path: Option<PathBuf>,
+    cgb_flag: u8,
 }
 
 impl Cartridge {
     pub fn new(mut rom: Vec<u8>, save_path: Option<PathBuf>) -> Cartridge {
         let header = |offset: usize| rom.get(offset).copied().unwrap_or(0);
         let kind = header(0x147);
+        let cgb_flag = header(0x143);
         let (mbc, battery) = match kind {
             0x00 | 0x08 => (Mbc::None, false),
             0x09 => (Mbc::None, true),
@@ -135,6 +137,7 @@ impl Cartridge {
             latch_armed: false,
             clock_cycles: 0,
             save_path: save_path.filter(|_| battery),
+            cgb_flag,
         }
     }
 
@@ -143,6 +146,11 @@ impl Cartridge {
             Some(path) if !self.ram.is_empty() => fs::write(path, &self.ram),
             _ => Ok(()),
         }
+    }
+
+    /// Whether the header marks the game as using Game Boy Color features.
+    pub fn supports_cgb(&self) -> bool {
+        self.cgb_flag & 0x80 != 0
     }
 
     pub fn rom_len(&self) -> usize {

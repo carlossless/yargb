@@ -39,37 +39,59 @@ differing_pixels() {
 }
 
 blargg() {
-  local rom
-  for rom in cpu_instrs/cpu_instrs.gb instr_timing/instr_timing.gb mem_timing/mem_timing.gb; do
-    echo "blargg $rom: $("$bin" "$roms/blargg/$rom" --headless --frames 4000 --serial "$@" 2>&1 >/dev/null | tr -s '\n' ' ' | tail -c 60)"
+  local rom model
+  for model in dmg cgb; do
+    for rom in cpu_instrs/cpu_instrs.gb instr_timing/instr_timing.gb mem_timing/mem_timing.gb; do
+      echo "blargg $rom ($model): $("$bin" "$roms/blargg/$rom" --model "$model" --headless --frames 4000 --serial "$@" 2>&1 >/dev/null | tr -s '\n' ' ' | tail -c 60)"
+    done
   done
-  for rom in mem_timing-2/mem_timing.gb halt_bug.gb dmg_sound/dmg_sound.gb oam_bug/oam_bug.gb; do
+  for rom in dmg:mem_timing-2/mem_timing.gb dmg:halt_bug.gb dmg:dmg_sound/dmg_sound.gb dmg:oam_bug/oam_bug.gb \
+    cgb:cgb_sound/cgb_sound.gb cgb:interrupt_time/interrupt_time.gb; do
+    model=${rom%%:*}
+    rom=${rom#*:}
     local png=$out/blargg-${rom//\//-}.png
-    "$bin" "$roms/blargg/$rom" --headless --frames 3000 --screenshot "$png" "$@"
-    echo "blargg $rom: reports on screen, see $png"
+    "$bin" "$roms/blargg/$rom" --model "$model" --headless --frames 3000 --screenshot "$png" "$@"
+    echo "blargg $rom ($model): reports on screen, see $png"
   done
 }
 
 acid() {
-  "$bin" "$roms/acid/dmg-acid2.gb" --headless --frames 120 --screenshot "$out/dmg-acid2.png" "$@"
-  echo "dmg-acid2: $(differing_pixels "$out/dmg-acid2.png" "$roms/acid/dmg-acid2.png") differing pixels"
+  local name
+  for name in dmg-acid2.gb cgb-acid2.gbc; do
+    local png=$out/${name%.*}.png
+    "$bin" "$roms/acid/$name" --headless --frames 120 --screenshot "$png" "$@"
+    echo "${name%.*}: $(differing_pixels "$png" "$roms/acid/${name%.*}.png") differing pixels"
+  done
 }
 
 # Mooneye tests report success by sending the Fibonacci bytes 3 5 8 13 21 34
-# over serial. Tests for other models than the DMG are skipped.
-mooneye() {
-  local dir=$roms/mooneye/acceptance pass=0 failed=() rom
+# over serial. File name suffixes name the models a test is for; tests for
+# other models are skipped.
+mooneye_model() {
+  local model=$1
+  shift
+  local pass=0 failed=() rom dirs=("$roms/mooneye/acceptance")
+  [[ $model == cgb ]] && dirs+=("$roms/mooneye/misc")
   while IFS= read -r rom; do
-    case "$(basename "$rom" .gb)" in
-      *-dmg0|*-mgb|*-sgb|*-sgb2|*-S|*-C|*-A|*-cgb*|*-agb*|*-ags*) continue ;;
-    esac
+    local name
+    name=$(basename "$rom" .gb)
+    if [[ $model == dmg ]]; then
+      case "$name" in *-dmg0|*-mgb|*-sgb|*-sgb2|*-S|*-C|*-A|*-cgb*|*-agb*|*-ags*) continue ;; esac
+    else
+      case "$name" in *-dmg*|*-mgb|*-sgb|*-sgb2|*-S|*-G|*-GS|*-A|*-agb*|*-ags*|*-cgb0) continue ;; esac
+    fi
     local result
-    result=$(timeout 20 "$bin" "$rom" --headless --frames 600 --serial "$@" 2>&1 >/dev/null \
+    result=$(timeout 20 "$bin" "$rom" --headless --frames 600 --serial --model "$model" "$@" 2>&1 >/dev/null \
       | head -c 64 | od -An -tx1 | tr -d ' \n' || true)
-    if [[ "$result" == *0305080d1522* ]]; then pass=$((pass + 1)); else failed+=("${rom#"$dir"/}"); fi
-  done < <(find "$dir" -name '*.gb' | sort)
-  echo "mooneye acceptance: $pass passed, ${#failed[@]} failed"
+    if [[ "$result" == *0305080d1522* ]]; then pass=$((pass + 1)); else failed+=("${rom#"$roms"/mooneye/}"); fi
+  done < <(find "${dirs[@]}" -name '*.gb' | sort)
+  echo "mooneye ($model): $pass passed, ${#failed[@]} failed"
   if ((${#failed[@]})); then printf '  %s\n' "${failed[@]}"; fi
+}
+
+mooneye() {
+  mooneye_model dmg "$@"
+  mooneye_model cgb "$@"
 }
 
 mealybug() {

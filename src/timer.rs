@@ -18,9 +18,9 @@ pub struct Timer {
 }
 
 impl Timer {
-    pub fn new() -> Timer {
+    pub fn new(counter: u16) -> Timer {
         Timer {
-            counter: 0xABC8,
+            counter,
             tima: 0,
             tma: 0,
             tac: 0xF8,

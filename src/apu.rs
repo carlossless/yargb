@@ -209,6 +209,7 @@ impl Noise {
 /// samples at `SAMPLE_RATE`, which the frontend drains with `take_samples`.
 #[derive(PartialEq)]
 pub struct Apu {
+    cgb: bool,
     powered: bool,
     registers: [u8; 0x17],
     square1: Square,
@@ -223,8 +224,9 @@ pub struct Apu {
 }
 
 impl Apu {
-    pub fn new() -> Apu {
+    pub fn new(cgb: bool) -> Apu {
         let mut apu = Apu {
+            cgb,
             powered: true,
             registers: [0; 0x17],
             square1: Square::default(),
@@ -394,9 +396,24 @@ impl Apu {
                 let index = addr as usize - 0xFF10;
                 self.registers[index] | READ_MASKS[index]
             }
+            0xFF30..=0xFF3F if self.cgb && self.wave.enabled => {
+                self.wave.ram[self.wave.position as usize / 2]
+            }
             0xFF30..=0xFF3F => self.wave.ram[addr as usize - 0xFF30],
             _ => 0xFF,
         }
+    }
+
+    /// The digital outputs of the two square channels, as the CGB's PCM12 register.
+    pub fn pcm12(&self) -> u8 {
+        let level = |output: Option<u8>| output.unwrap_or(0);
+        level(self.square1.output()) | level(self.square2.output()) << 4
+    }
+
+    /// The digital outputs of the wave and noise channels, as PCM34.
+    pub fn pcm34(&self) -> u8 {
+        let level = |output: Option<u8>| output.unwrap_or(0);
+        level(self.wave.output()) | level(self.noise.output()) << 4
     }
 
     pub fn write(&mut self, addr: u16, value: u8) {
@@ -410,6 +427,12 @@ impl Apu {
                 self.square2.enabled = false;
                 self.wave.enabled = false;
                 self.noise.enabled = false;
+                if self.cgb {
+                    self.square1.length.counter = 0;
+                    self.square2.length.counter = 0;
+                    self.wave.length.counter = 0;
+                    self.noise.length.counter = 0;
+                }
             } else if !self.powered && powered {
                 self.frame_step = 0;
                 self.square1.position = 0;
@@ -424,6 +447,9 @@ impl Apu {
             return;
         }
         if !(0xFF10..=0xFF25).contains(&addr) {
+            return;
+        }
+        if !self.powered && self.cgb {
             return;
         }
         if !self.powered {

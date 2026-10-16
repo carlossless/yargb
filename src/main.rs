@@ -16,6 +16,7 @@ use std::process::ExitCode;
 
 use crate::cartridge::Cartridge;
 use crate::emulator::Emulator;
+use crate::mmu::Model;
 
 const USAGE: &str = "usage: yargb [options] ROM
 
@@ -25,6 +26,7 @@ options:
   --screenshot PATH  write the last frame to PATH as a PNG
   --scale N          window scale (default 4)
   --serial           print bytes sent over the link cable to stderr
+  --model MODEL      dmg, cgb, or auto to pick from the cartridge header (default)
   --interpreter      run without the JIT
   --trace            print every instruction (implies --interpreter)";
 
@@ -36,6 +38,7 @@ struct Options {
     scale: u32,
     serial: bool,
     interpreter: bool,
+    model: Option<Model>,
     trace: bool,
 }
 
@@ -49,6 +52,7 @@ fn parse_options() -> Result<Options, String> {
         scale: 4,
         serial: false,
         interpreter: false,
+        model: None,
         trace: false,
     };
     let mut args = std::env::args().skip(1);
@@ -71,6 +75,14 @@ fn parse_options() -> Result<Options, String> {
             }
             "--serial" => options.serial = true,
             "--interpreter" => options.interpreter = true,
+            "--model" => {
+                options.model = match value("--model")?.as_str() {
+                    "dmg" => Some(Model::Dmg),
+                    "cgb" => Some(Model::Cgb),
+                    "auto" => None,
+                    other => return Err(format!("unknown model {other}")),
+                }
+            }
             "--trace" => options.trace = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
             path => rom = Some(PathBuf::from(path)),
@@ -87,7 +99,10 @@ fn run(options: Options) -> Result<(), String> {
     let rom = std::fs::read(&options.rom)
         .map_err(|error| format!("failed to read {}: {error}", options.rom.display()))?;
     let cartridge = Cartridge::new(rom, Some(options.rom.with_extension("sav")));
-    let mut emulator = Emulator::new(cartridge, !options.interpreter, options.trace);
+    let model = options
+        .model
+        .unwrap_or_else(|| Model::for_cartridge(&cartridge));
+    let mut emulator = Emulator::new(cartridge, model, !options.interpreter, options.trace);
     emulator.set_serial_output(options.serial);
 
     if options.headless {

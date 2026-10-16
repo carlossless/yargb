@@ -1,7 +1,9 @@
 use crate::cartridge::Cartridge;
-use crate::mmu::MMU;
-use crate::registers::Registers;
+use crate::mmu::{MMU, Model};
 use crate::registers::WordRegister::{BC, DE, HL, SP};
+use crate::registers::{
+    DEFAULT_CGB_COMPAT_REGISTERS, DEFAULT_CGB_REGISTERS, DEFAULT_DMG_REGISTERS, Registers,
+};
 // use utils::format::FormatAsSigned;
 
 pub mod jit;
@@ -23,6 +25,7 @@ pub struct CPU {
     regs: Registers,
     mmu: MMU,
     pub halted: bool,
+    stopped: bool,
     halt_bug: bool,
     locked: bool,
     instruction_cycles: usize,
@@ -851,10 +854,15 @@ impl CPU {
         dop!("SET 7,A", &set!(7, a)),
     ];
 
-    pub fn new(cartridge: Cartridge) -> CPU {
+    pub fn new(cartridge: Cartridge, model: Model) -> CPU {
         CPU {
-            regs: Registers::new(),
-            mmu: MMU::new(cartridge),
+            regs: match (model, cartridge.supports_cgb()) {
+                (Model::Dmg, _) => DEFAULT_DMG_REGISTERS,
+                (Model::Cgb, true) => DEFAULT_CGB_REGISTERS,
+                (Model::Cgb, false) => DEFAULT_CGB_COMPAT_REGISTERS,
+            },
+            mmu: MMU::new(cartridge, model),
+            stopped: false,
             halted: false,
             halt_bug: false,
             locked: false,
@@ -876,7 +884,15 @@ impl CPU {
     }
 
     pub fn cycle(&mut self) -> usize {
-        let ticks = if self.halted || self.locked {
+        let stall = self.mmu.take_stall_cycles();
+        if stall > 0 {
+            self.mmu.tick(stall);
+            return stall + self.service_interrupts();
+        }
+        if self.stopped && self.mmu.any_button_pressed() {
+            self.stopped = false;
+        }
+        let ticks = if self.halted || self.locked || self.stopped {
             self.internal();
             1
         } else {
@@ -1036,6 +1052,10 @@ impl CPU {
     }
 
     fn stop(&mut self) -> usize {
+        match self.mmu.stop() {
+            Some(stall) => self.mmu.stall(stall),
+            None => self.stopped = true,
+        }
         1
     }
 
@@ -1065,7 +1085,7 @@ mod tests {
     fn create_cpu_with_single_instruction(instruction: Vec<u8>) -> CPU {
         let mut rom_data = vec![0x00; 0x10000];
         rom_data[0x100..(0x100 + instruction.len())].copy_from_slice(&instruction);
-        CPU::new(Cartridge::new(rom_data, None))
+        CPU::new(Cartridge::new(rom_data, None), Model::Dmg)
     }
 
     #[test]
