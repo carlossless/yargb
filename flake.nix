@@ -68,7 +68,7 @@
 
         devShells.default = pkgs.mkShell {
           inherit buildInputs;
-          nativeBuildInputs = with pkgs; [ rustup toolchain curl unzip ];
+          nativeBuildInputs = with pkgs; [ rustup toolchain ];
         };
       }
     );
