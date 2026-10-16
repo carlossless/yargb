@@ -1,4 +1,3 @@
-
 use crate::cpu::CPU;
 use crate::registers::Flag::{C, H, N, Z};
 
@@ -157,7 +156,6 @@ impl CPU {
         self.regs.set_flag(H, (*value & 0x0F) == 0x00);
         *value = result;
     }
-
 
     pub fn alu_add_to_hl(&mut self, value: u16) {
         let hl = self.regs.get_hl();

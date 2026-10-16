@@ -17,12 +17,12 @@ mod stack;
 #[macro_use]
 mod shift;
 
-/// T-cycles into its M-cycle at which a CPU write lands. Reads see the
-/// hardware at the end of their M-cycle.
-pub(crate) const WRITE_T: usize = 3;
-
 /// The most M-cycles a halted or locked CPU skips at once.
 const MAX_IDLE_CYCLES: usize = 1024;
+/// T-cycles into its M-cycle at which a halted DMG samples interrupts.
+const HALTED_SAMPLE_T: usize = 2;
+/// VBlank and STAT.
+const PPU_INTERRUPTS: u8 = 0b11;
 
 pub struct CPU {
     regs: Registers,
@@ -33,7 +33,8 @@ pub struct CPU {
     locked: bool,
     instruction_cycles: usize,
     pub trace: bool,
-    ime_delay: u8,
+    ime_toggle: bool,
+    just_halted: bool,
     jit_ticks: u32,
     jit_synced: u32,
     jit_budget: u32,
@@ -872,7 +873,8 @@ impl CPU {
             locked: false,
             instruction_cycles: 0,
             trace: false,
-            ime_delay: 0,
+            ime_toggle: false,
+            just_halted: false,
             jit_ticks: 0,
             jit_synced: 0,
             jit_budget: 0,
@@ -887,42 +889,88 @@ impl CPU {
         &mut self.mmu
     }
 
+    /// Runs one instruction, interrupt dispatch or stretch of idle time and
+    /// returns the M-cycles it took.
     pub fn cycle(&mut self) -> usize {
         let stall = self.mmu.take_stall_cycles();
         if stall > 0 {
             self.mmu.tick(stall);
-            return stall + self.service_interrupts();
+            return stall;
         }
         if self.stopped && self.mmu.any_button_pressed() {
             self.stopped = false;
         }
-        let ticks = if self.halted || self.locked {
-            let quiet = if self.locked {
-                MAX_IDLE_CYCLES
-            } else {
-                self.mmu
-                    .m_cycles_until_event(true)
-                    .clamp(1, MAX_IDLE_CYCLES)
-            };
-            self.mmu.tick(quiet);
-            quiet
-        } else if self.stopped {
+        if self.locked {
+            self.mmu.tick(MAX_IDLE_CYCLES);
+            return MAX_IDLE_CYCLES;
+        }
+        if self.stopped {
             self.internal();
-            1
-        } else {
-            self.process()
-        };
-        self.retire(ticks)
+            return 1;
+        }
+        if self.halted {
+            return self.halted_cycle();
+        }
+        self.instruction_cycles = 0;
+        let before = self.mmu.pending_interrupts();
+        self.tick_cycle();
+        let pending = self.sampled_interrupts(before);
+        self.after_fetch_cycle(pending)
     }
 
-    fn retire(&mut self, ticks: usize) -> usize {
-        if self.ime_delay > 0 {
-            self.ime_delay -= 1;
-            if self.ime_delay == 0 {
-                self.regs.ime = true;
-            }
+    /// The PPU's interrupts are sampled at the end of the fetch cycle, the
+    /// other sources as they stood at its start.
+    fn sampled_interrupts(&self, before: u8) -> bool {
+        let now = self.mmu.pending_interrupts();
+        now & PPU_INTERRUPTS | before & now & !PPU_INTERRUPTS != 0
+    }
+
+    /// While halted the CPU samples interrupts once per M-cycle: 2 T-cycles
+    /// in on the DMG, at its start on the CGB and right after HALT.
+    fn halted_cycle(&mut self) -> usize {
+        let mut idle = 0;
+        if !self.just_halted && self.mmu.pending_interrupts() == 0 {
+            idle = self
+                .mmu
+                .m_cycles_until_event(true)
+                .clamp(1, MAX_IDLE_CYCLES)
+                - 1;
+            self.mmu.tick(idle);
         }
-        ticks + self.service_interrupts()
+        let before = self.mmu.pending_interrupts();
+        let pending = if !self.mmu.is_cgb() && !self.just_halted {
+            self.mmu.begin_cycle(HALTED_SAMPLE_T);
+            let pending = self.sampled_interrupts(before);
+            self.mmu.finish_cycle();
+            pending
+        } else {
+            self.mmu.tick(1);
+            before != 0
+        };
+        self.just_halted = false;
+        if !pending {
+            return idle + 1;
+        }
+        self.halted = false;
+        self.instruction_cycles = 1;
+        idle + self.after_fetch_cycle(true)
+    }
+
+    /// A taken interrupt turns the opcode fetch into the first cycle of its
+    /// dispatch.
+    fn after_fetch_cycle(&mut self, pending: bool) -> usize {
+        let ime = self.regs.ime;
+        if std::mem::take(&mut self.ime_toggle) {
+            self.regs.ime = !self.regs.ime;
+        }
+        if ime && pending {
+            return self.dispatch_interrupt();
+        }
+        let opcode = self.mmu.cpu_read(self.regs.pc);
+        if !std::mem::take(&mut self.halt_bug) {
+            self.regs.pc = self.regs.pc.wrapping_add(1);
+        }
+        self.execute(opcode)
     }
 
     fn tick_cycle(&mut self) {
@@ -948,8 +996,7 @@ impl CPU {
 
     pub(crate) fn write(&mut self, addr: u16, value: u8) {
         self.instruction_cycles += 1;
-        self.mmu.begin_cycle(WRITE_T);
-        self.mmu.cpu_write(addr, value);
+        self.mmu.begin_cpu_write(addr, value);
         self.mmu.finish_cycle();
     }
 
@@ -963,17 +1010,10 @@ impl CPU {
         self.jit_synced = self.jit_ticks;
     }
 
-    fn service_interrupts(&mut self) -> usize {
-        if self.mmu.pending_interrupts() == 0 || self.locked {
-            return 0;
-        }
-        self.halted = false;
-        if !self.regs.ime {
-            return 0;
-        }
+    fn dispatch_interrupt(&mut self) -> usize {
         self.regs.ime = false;
-        self.internal();
         self.internal_at(self.regs.sp);
+        self.internal();
         let pc = self.regs.pc;
         self.regs.sp = self.regs.sp.wrapping_sub(1);
         self.write(self.regs.sp, (pc >> 8) as u8);
@@ -987,14 +1027,17 @@ impl CPU {
             self.mmu.acknowledge_interrupt(bit);
             0x40 + 8 * bit as u16
         };
-        self.internal();
         5
     }
 
+    /// Fetches and runs one instruction without sampling interrupts.
     fn process(&mut self) -> usize {
         self.instruction_cycles = 0;
-        let regs = self.regs;
         let op_code = self.fetch_byte();
+        self.execute(op_code)
+    }
+
+    fn execute(&mut self, op_code: u8) -> usize {
         let op = &CPU::OPS[op_code as usize];
         if self.trace {
             println!(
@@ -1002,7 +1045,7 @@ impl CPU {
                 op_code,
                 op.mneumonic,
                 self.trace_operand(op),
-                regs.one_line_rep()
+                self.regs.one_line_rep()
             );
         }
         let ticks = (op.execute)(self);
@@ -1059,16 +1102,16 @@ impl CPU {
         1
     }
 
+    /// IME rises once the next instruction has been fetched.
     fn enable_interupts(&mut self) -> usize {
-        if !self.regs.ime && self.ime_delay == 0 {
-            self.ime_delay = 2;
+        if !self.regs.ime && !self.ime_toggle {
+            self.ime_toggle = true;
         }
         1
     }
 
     fn disable_interupts(&mut self) -> usize {
         self.regs.ime = false;
-        self.ime_delay = 0;
         1
     }
 
@@ -1080,13 +1123,22 @@ impl CPU {
         1
     }
 
+    /// With an interrupt already pending, HALT ends at once and its second
+    /// cycle doubles as the next fetch; with IME set, the interrupt returns
+    /// to the HALT, which then halts.
     fn halt(&mut self) -> usize {
-        if self.regs.ime || self.mmu.pending_interrupts() == 0 {
-            self.halted = true;
-        } else {
-            self.halt_bug = true;
+        if self.mmu.pending_interrupts() != 0 {
+            if self.regs.ime {
+                self.regs.pc = self.regs.pc.wrapping_sub(1);
+            } else {
+                self.halt_bug = true;
+            }
+            return 1;
         }
-        1
+        self.read(self.regs.pc);
+        self.halted = true;
+        self.just_halted = true;
+        2
     }
 
     fn nonexistant(&mut self) -> usize {

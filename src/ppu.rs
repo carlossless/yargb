@@ -10,10 +10,7 @@ const MAX_LINE_SPRITES: usize = 10;
 /// Dots before line 144 at which a CGB raises the mode 2 STAT interrupt
 /// that the DMG raises together with VBlank.
 const CGB_VBLANK_OAM_LEAD: u32 = 4;
-/// Dots the background fetcher must have spent on its current tile before an
-/// object fetch can take over.
-const SPRITE_FETCH_WAIT: u8 = 4;
-/// Dots before STAT and the VRAM/OAM locks reflect a switch to mode 3 or mode 0,
+/// Dots before STAT and the VRAM/OAM locks reflect a switch to mode 3,
 /// counting the dot of the switch. Interrupts see the switch immediately.
 const VISIBLE_MODE_LAG: u8 = 2;
 /// Turning the LCD on drops the PPU into line 0 this many dots in.
@@ -21,6 +18,8 @@ const LCD_ON_DOT: u32 = 3;
 /// Line 0 after turning the LCD on has no OAM scan and starts its transfer
 /// 2 dots later than other lines.
 const FIRST_LINE_TRANSFER_DOT: u32 = OAM_SCAN_DOTS + 2;
+/// Dots between STAT reporting mode 3 and the pixel pipeline starting.
+const PIPELINE_START_DELAY: u8 = 5;
 /// The OAM scan moves to the next 8-byte row every 4 dots, this many dots
 /// before the dot count reaches a multiple of 4.
 const OAM_BUG_ROW_LAG: u32 = 5;
@@ -38,72 +37,134 @@ const STAT_VBLANK: u8 = 1 << 4;
 const STAT_OAM: u8 = 1 << 5;
 const STAT_LYC: u8 = 1 << 6;
 
-#[derive(Clone, Copy, Default, PartialEq)]
-struct Sprite {
-    x: u8,
-    y: u8,
-    oam_index: u8,
-    fetched: bool,
-}
+pub const LCDC_ENABLE: u8 = 0x80;
+const LCDC_WIN_MAP: u8 = 0x40;
+const LCDC_WIN_ENABLE: u8 = 0x20;
+const LCDC_TILE_SEL: u8 = 0x10;
+const LCDC_BG_MAP: u8 = 0x08;
+const LCDC_OBJ_SIZE: u8 = 0x04;
+pub const LCDC_OBJ_ENABLE: u8 = 0x02;
+pub const LCDC_BG_ENABLE: u8 = 0x01;
+
+/// Background fetcher steps. A VRAM read takes two dots: the address is set
+/// up in the first and the data arrives in the second.
+const FETCH_TILE_T1: u8 = 0;
+const FETCH_TILE_T2: u8 = 1;
+const FETCH_LOW_T1: u8 = 2;
+const FETCH_LOW_T2: u8 = 3;
+const FETCH_HIGH_T1: u8 = 4;
+const FETCH_HIGH_T2: u8 = 5;
+const FETCH_PUSH: u8 = 6;
+
+/// Positions in the line are kept as wrapping bytes: the 16 before the
+/// first visible pixel are 240 to 255.
+const POSITION_START: u8 = 0u8.wrapping_sub(16);
 
 #[derive(Clone, Copy, Default, PartialEq)]
-struct ObjPixel {
-    color: u8,
+struct FifoItem {
+    pixel: u8,
     palette: u8,
-    behind_bg: bool,
-    oam_index: u8,
+    priority: u8,
+    bg_priority: bool,
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
-struct BgPixel {
-    color: u8,
-    palette: u8,
-    priority: bool,
+struct Fifo {
+    items: [FifoItem; 8],
+    read_end: u8,
+    size: u8,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum FetchStep {
-    Tile,
-    Low,
-    High,
-    Push,
-}
+impl Fifo {
+    fn clear(&mut self) {
+        self.read_end = 0;
+        self.size = 0;
+    }
 
-#[derive(Clone, Copy, PartialEq)]
-struct Fetcher {
-    step: FetchStep,
-    dot: u8,
-    column: u8,
-    tile: u8,
-    attributes: u8,
-    low: u8,
-    high: u8,
-    window: bool,
-    warmup: bool,
-    since_push: u8,
-}
+    fn pop(&mut self) -> FifoItem {
+        let item = self.items[self.read_end as usize];
+        self.read_end = (self.read_end + 1) & 7;
+        self.size -= 1;
+        item
+    }
 
-impl Fetcher {
-    /// The warm-up fetch at the start of mode 3 takes 4 dots and its 8 pixels
-    /// are shifted out unseen, though objects can still be matched against them.
-    fn new(window: bool, warmup: bool) -> Fetcher {
-        Fetcher {
-            since_push: 0,
-            step: if warmup {
-                FetchStep::Low
+    fn push_bg_row(
+        &mut self,
+        mut lower: u8,
+        mut upper: u8,
+        palette: u8,
+        bg_priority: bool,
+        flip_x: bool,
+    ) {
+        self.size = 8;
+        for item in &mut self.items {
+            let pixel = if flip_x {
+                let pixel = (lower & 1) | (upper & 1) << 1;
+                lower >>= 1;
+                upper >>= 1;
+                pixel
             } else {
-                FetchStep::Tile
-            },
-            dot: 0,
-            column: 0,
-            tile: 0,
-            attributes: 0,
-            low: 0,
-            high: 0,
-            window,
-            warmup,
+                let pixel = (lower >> 7) | (upper >> 7) << 1;
+                lower <<= 1;
+                upper <<= 1;
+                pixel
+            };
+            *item = FifoItem {
+                pixel,
+                palette,
+                priority: 0,
+                bg_priority,
+            };
         }
     }
+
+    /// Objects already in the FIFO keep their pixels unless the new object
+    /// wins on priority.
+    fn overlay_object_row(
+        &mut self,
+        mut lower: u8,
+        mut upper: u8,
+        palette: u8,
+        bg_priority: bool,
+        priority: u8,
+        flip_x: bool,
+    ) {
+        while self.size < 8 {
+            self.items[((self.read_end + self.size) & 7) as usize] = FifoItem::default();
+            self.size += 1;
+        }
+        let flip_xor = if flip_x { 0 } else { 7 };
+        for i in (0..8u8).rev() {
+            let pixel = (lower >> 7) | (upper >> 7) << 1;
+            let target = &mut self.items[((self.read_end + (i ^ flip_xor)) & 7) as usize];
+            if pixel != 0 && (target.pixel == 0 || target.priority > priority) {
+                *target = FifoItem {
+                    pixel,
+                    palette,
+                    priority,
+                    bg_priority,
+                };
+            }
+            lower <<= 1;
+            upper <<= 1;
+        }
+    }
+}
+
+/// Where the mode 3 pipeline resumes on its next dot.
+#[derive(Clone, Copy, PartialEq)]
+enum Pipeline {
+    Delay(u8),
+    Window,
+    AfterWindow,
+    Objects,
+    ObjectWait,
+    AfterObjectWait,
+    ObjectAttributes,
+    ObjectLow,
+    ObjectHigh,
+    ObjectPush,
+    Pixel,
 }
 
 fn palette_color(palettes: &[u8; 64], palette: u8, color: u8) -> u16 {
@@ -141,25 +202,49 @@ pub struct Ppu {
     wx: u8,
     mode: u8,
     visible_mode: u8,
+    stat_mode: u8,
+    stat_lag: u8,
     visible_lag: u8,
     dot: u32,
     stat_line: bool,
     lyc_match: bool,
-    sprites: [Sprite; MAX_LINE_SPRITES],
-    sprite_count: usize,
-    fetcher: Fetcher,
-    bg_fifo: [BgPixel; 8],
-    bg_len: u8,
-    obj_fifo: [ObjPixel; 8],
-    obj_len: u8,
-    lcd_x: i16,
-    discard: u8,
-    sprite_fetch: Option<(usize, u8)>,
-    window_line: u8,
-    window_drawn: bool,
-    window_y_hit: bool,
     first_line: bool,
     frame: Box<Frame>,
+    pipeline: Pipeline,
+    pipeline_sleep: u8,
+    bg_fifo: Fifo,
+    obj_fifo: Fifo,
+    position_in_line: u8,
+    lcd_x: u8,
+    fetcher_state: u8,
+    fetcher_y: u8,
+    current_tile: u8,
+    current_tile_attributes: u8,
+    current_tile_data: [u8; 2],
+    last_tile_index_address: u16,
+    last_tile_data_address: u16,
+    wx_triggered: bool,
+    wy_triggered: bool,
+    window_y: u8,
+    window_tile_x: u8,
+    window_is_being_fetched: bool,
+    insert_bg_pixel: bool,
+    line_has_fractional_scrolling: bool,
+    disable_window_pixel_insertion_glitch: bool,
+    /// Set for one dot after a DMG write to WX.
+    pub wx_just_changed: bool,
+    cgb_wx_glitch: bool,
+    wy_check_pending: bool,
+    visible_objs: [u8; MAX_LINE_SPRITES],
+    objects_x: [u8; MAX_LINE_SPRITES],
+    objects_y: [u8; MAX_LINE_SPRITES],
+    n_visible_objs: usize,
+    object_tile: u8,
+    object_flags: u8,
+    object_tile_data: [u8; 2],
+    object_line_address: u16,
+    during_object_fetch: bool,
+    object_fetch_aborted: bool,
 }
 
 /// One pixel per screen position: a DMG shade from 0 (lightest) to 3, or a
@@ -204,25 +289,74 @@ impl Ppu {
             wx: 0,
             mode: MODE_OAM_SCAN,
             visible_mode: MODE_OAM_SCAN,
+            stat_mode: MODE_OAM_SCAN,
+            stat_lag: 0,
             visible_lag: 0,
             dot: 0,
             stat_line: false,
             lyc_match: true,
-            sprites: [Sprite::default(); MAX_LINE_SPRITES],
-            sprite_count: 0,
-            fetcher: Fetcher::new(false, true),
-            bg_fifo: [BgPixel::default(); 8],
-            bg_len: 0,
-            obj_fifo: [ObjPixel::default(); 8],
-            obj_len: 0,
-            lcd_x: 0,
-            discard: 0,
-            sprite_fetch: None,
-            window_line: 0,
-            window_drawn: false,
-            window_y_hit: false,
             first_line: false,
             frame: Box::new([0; SCREEN_WIDTH * SCREEN_HEIGHT]),
+            pipeline: Pipeline::Delay(0),
+            pipeline_sleep: 0,
+            bg_fifo: Fifo::default(),
+            obj_fifo: Fifo::default(),
+            position_in_line: POSITION_START,
+            lcd_x: 0,
+            fetcher_state: FETCH_TILE_T1,
+            fetcher_y: 0,
+            current_tile: 0,
+            current_tile_attributes: 0,
+            current_tile_data: [0; 2],
+            last_tile_index_address: 0,
+            last_tile_data_address: 0,
+            wx_triggered: false,
+            wy_triggered: false,
+            window_y: 0xFF,
+            window_tile_x: 0,
+            window_is_being_fetched: false,
+            insert_bg_pixel: false,
+            line_has_fractional_scrolling: false,
+            disable_window_pixel_insertion_glitch: false,
+            wx_just_changed: false,
+            cgb_wx_glitch: false,
+            wy_check_pending: false,
+            visible_objs: [0; MAX_LINE_SPRITES],
+            objects_x: [0; MAX_LINE_SPRITES],
+            objects_y: [0; MAX_LINE_SPRITES],
+            n_visible_objs: 0,
+            object_tile: 0,
+            object_flags: 0,
+            object_tile_data: [0; 2],
+            object_line_address: 0,
+            during_object_fetch: false,
+            object_fetch_aborted: false,
+        }
+    }
+
+    /// Leaves VRAM as the DMG boot ROM does: the cartridge's logo scaled up
+    /// into tiles 1-24, the ® mark in tile 25, and both placed on the map.
+    pub fn load_dmg_boot_screen(&mut self, logo: &[u8; 48]) {
+        let mut address = 0x10;
+        for &byte in logo {
+            for nibble in [byte >> 4, byte & 0x0F] {
+                let doubled = (0..4).rev().fold(0u8, |row, bit| {
+                    let set = (nibble >> bit) & 1;
+                    row << 2 | set << 1 | set
+                });
+                self.vram[address] = doubled;
+                self.vram[address + 2] = doubled;
+                address += 4;
+            }
+        }
+        const REGISTERED: [u8; 8] = [0x3C, 0x42, 0xB9, 0xA5, 0xB9, 0xA5, 0x42, 0x3C];
+        for (row, &byte) in REGISTERED.iter().enumerate() {
+            self.vram[0x190 + row * 2] = byte;
+        }
+        self.vram[0x1910] = 0x19;
+        for column in 0..12 {
+            self.vram[0x1904 + column] = column as u8 + 1;
+            self.vram[0x1924 + column] = column as u8 + 13;
         }
     }
 
@@ -246,7 +380,7 @@ impl Ppu {
     }
 
     fn enabled(&self) -> bool {
-        self.lcdc & 0x80 != 0
+        self.lcdc & LCDC_ENABLE != 0
     }
 
     pub fn vram_accessible(&self) -> bool {
@@ -265,21 +399,41 @@ impl Ppu {
         !scanning && self.mode != MODE_TRANSFER && self.visible_mode != MODE_TRANSFER
     }
 
+    /// STAT and the memory locks see the start of mode 3 a dot late, and its
+    /// end straight away.
     fn update_visible_mode(&mut self) {
         if self.visible_mode == self.mode {
             self.visible_lag = 0;
+        } else if self.mode == MODE_VBLANK || self.mode == MODE_HBLANK {
+            self.visible_mode = self.mode;
+        } else {
+            if self.visible_lag == 0 {
+                self.visible_lag = VISIBLE_MODE_LAG;
+            }
+            self.visible_lag -= 1;
+            if self.visible_lag == 0 {
+                self.visible_mode = self.mode;
+            }
+        }
+        self.update_stat_mode();
+    }
+
+    /// The STAT interrupt sees HBlank a dot after the memory locks lift, and
+    /// on the DMG sees VBlank two dots after it begins.
+    fn update_stat_mode(&mut self) {
+        if self.stat_mode == self.visible_mode {
+            self.stat_lag = 0;
             return;
         }
-        if self.mode == MODE_VBLANK {
-            self.visible_mode = self.mode;
-            return;
-        }
-        if self.visible_lag == 0 {
-            self.visible_lag = VISIBLE_MODE_LAG;
-        }
-        self.visible_lag -= 1;
-        if self.visible_lag == 0 {
-            self.visible_mode = self.mode;
+        let lag = match self.visible_mode {
+            MODE_HBLANK => 1,
+            MODE_VBLANK if !self.renders_color() => 2,
+            _ => 0,
+        };
+        self.stat_lag += 1;
+        if self.stat_lag > lag {
+            self.stat_mode = self.visible_mode;
+            self.stat_lag = 0;
         }
     }
 
@@ -289,15 +443,36 @@ impl Ppu {
         if self.renders_color() {
             self.ly == SCREEN_HEIGHT as u8 - 1 && self.dot == LINE_DOTS - CGB_VBLANK_OAM_LEAD
         } else {
-            self.ly == SCREEN_HEIGHT as u8 && self.dot == 0
+            self.ly == SCREEN_HEIGHT as u8 && self.dot == self.cpu_visible_dot(self.ly)
         }
     }
 
+    /// The dot at which the mode a line starts with reaches the interrupt
+    /// logic: on the DMG, line 0 and VBlank arrive late.
+    fn cpu_visible_dot(&self, ly: u8) -> u32 {
+        match ly {
+            _ if self.renders_color() => 0,
+            0 => 1,
+            ly if ly == SCREEN_HEIGHT as u8 => 2,
+            _ => 0,
+        }
+    }
+
+    fn dmg_mode_change_pending(&self) -> bool {
+        self.dot < self.cpu_visible_dot(self.ly)
+    }
+
     fn update_stat_line(&mut self) -> u8 {
-        let mode = self.mode;
+        let mode = match self.mode {
+            _ if !self.dmg_mode_change_pending() => self.mode,
+            MODE_VBLANK => MODE_HBLANK,
+            _ => MODE_VBLANK,
+        };
         let line = self.stat & STAT_LYC != 0 && self.lyc_match
             || self.enabled()
-                && (self.stat & STAT_HBLANK != 0 && mode == MODE_HBLANK
+                && (self.stat & STAT_HBLANK != 0
+                    && mode == MODE_HBLANK
+                    && (self.stat_mode == MODE_HBLANK || mode != self.mode)
                     || self.stat & STAT_VBLANK != 0 && mode == MODE_VBLANK
                     || self.stat & STAT_OAM != 0
                         && (mode == MODE_OAM_SCAN || self.oam_interrupt_at_vblank()));
@@ -313,6 +488,20 @@ impl Ppu {
         let mut interrupts = 0;
         let mut remaining = t_cycles as u32;
         while remaining > 0 {
+            if self.settled_in_transfer() {
+                while remaining > 0 {
+                    remaining -= 1;
+                    if self.pipeline_dot() {
+                        self.end_transfer();
+                        self.dot += 1;
+                        self.update_visible_mode();
+                        interrupts |= self.update_stat_line();
+                        break;
+                    }
+                    self.dot += 1;
+                }
+                continue;
+            }
             let quiet = self.quiet_dots().min(remaining);
             if quiet > 0 {
                 self.skip_quiet_dots(quiet);
@@ -325,11 +514,27 @@ impl Ppu {
         interrupts
     }
 
+    /// Whether the coming dots of mode 3 can run the pixel pipeline alone:
+    /// past the OAM scan, with STAT settled and no pending register effects.
+    fn settled_in_transfer(&self) -> bool {
+        self.mode == MODE_TRANSFER
+            && self.visible_mode == MODE_TRANSFER
+            && self.stat_mode == MODE_TRANSFER
+            && self.dot > OAM_SCAN_DOTS
+            && !self.wx_just_changed
+            && !self.wy_check_pending
+    }
+
     /// Dots from now in which stepping would change nothing but the dot
     /// counter and the OAM scan, so they can be skipped in one go. Each run
     /// stops a dot short of the next event for `step` to handle.
     fn quiet_dots(&self) -> u32 {
-        if self.visible_mode != self.mode || self.dot == 0 {
+        if self.visible_mode != self.mode
+            || self.stat_mode != self.visible_mode
+            || self.dot == 0
+            || self.wx_just_changed
+            || self.wy_check_pending
+        {
             return 0;
         }
         let end = match self.mode {
@@ -355,30 +560,55 @@ impl Ppu {
     fn skip_quiet_dots(&mut self, dots: u32) {
         if self.mode == MODE_OAM_SCAN {
             for dot in self.dot..self.dot + dots {
-                if dot % 2 == 0 {
-                    self.scan_oam_entry((dot / 2) as usize);
-                }
+                self.scan_oam_at(dot);
             }
         }
         self.dot += dots;
     }
 
+    /// The OAM scan reads an entry every 2 dots: on the CGB as each pair of
+    /// dots starts, on the DMG as it ends.
+    fn scan_oam_at(&mut self, dot: u32) {
+        if dot % 2 != 0 {
+            return;
+        }
+        let index = if self.renders_color() {
+            dot / 2
+        } else if dot >= 2 {
+            dot / 2 - 1
+        } else {
+            return;
+        };
+        if index < 40 {
+            self.add_object(index as usize);
+        }
+    }
+
     fn step(&mut self) -> u8 {
+        let interrupts = self.step_inner();
+        self.wx_just_changed = false;
+        interrupts
+    }
+
+    fn step_inner(&mut self) -> u8 {
         let mut interrupts = 0;
+        if self.wy_check_pending {
+            self.wy_check_pending = false;
+            self.wy_check(self.ly);
+        }
         match self.mode {
             MODE_OAM_SCAN => {
-                if self.dot % 2 == 0 && self.dot < OAM_SCAN_DOTS {
-                    self.scan_oam_entry((self.dot / 2) as usize);
-                }
+                self.scan_oam_at(self.dot);
                 if self.dot + 1 == OAM_SCAN_DOTS {
                     self.start_transfer();
                 }
             }
             MODE_TRANSFER => {
-                self.transfer_dot();
-                if self.lcd_x == SCREEN_WIDTH as i16 {
-                    self.mode = MODE_HBLANK;
-                    self.hblank_started = true;
+                if !self.first_line {
+                    self.scan_oam_at(self.dot);
+                }
+                if self.pipeline_dot() {
+                    self.end_transfer();
                 }
             }
             _ => {}
@@ -389,6 +619,11 @@ impl Ppu {
         }
         if self.dot == LINE_DOTS {
             interrupts |= self.next_line();
+        } else if self.ly == SCREEN_HEIGHT as u8
+            && !self.renders_color()
+            && self.dot == self.cpu_visible_dot(self.ly)
+        {
+            interrupts |= VBLANK_INTERRUPT;
         }
         self.update_visible_mode();
         self.lyc_match = self.dot != 0 && self.ly == self.lyc;
@@ -396,341 +631,605 @@ impl Ppu {
     }
 
     fn next_line(&mut self) -> u8 {
+        let previous = self.ly;
         self.dot = 0;
         self.first_line = false;
-        if self.window_drawn {
-            self.window_line += 1;
-            self.window_drawn = false;
-        }
         self.ly = (self.ly + 1) % LINES;
         if self.ly == 0 {
-            self.window_line = 0;
-            self.window_y_hit = false;
+            self.wy_triggered = false;
         }
         if self.ly < SCREEN_HEIGHT as u8 {
             self.mode = MODE_OAM_SCAN;
-            self.sprite_count = 0;
-            if self.ly == self.wy {
-                self.window_y_hit = true;
-            }
+            self.n_visible_objs = 0;
+            self.wy_check(if self.ly == 0 { 0 } else { previous });
+            self.wy_check(self.ly);
             0
         } else if self.ly == SCREEN_HEIGHT as u8 {
             self.mode = MODE_VBLANK;
-            VBLANK_INTERRUPT
+            if self.renders_color() {
+                VBLANK_INTERRUPT
+            } else {
+                0
+            }
         } else {
             0
         }
     }
 
-    fn scan_oam_entry(&mut self, index: usize) {
-        if index == 0 {
-            self.sprite_count = 0;
-            if self.ly == self.wy {
-                self.window_y_hit = true;
-            }
+    fn wy_check(&mut self, ly: u8) {
+        if self.enabled() && self.lcdc & LCDC_WIN_ENABLE != 0 && self.wy == ly {
+            self.wy_triggered = true;
         }
-        if self.sprite_count == MAX_LINE_SPRITES {
+    }
+
+    fn add_object(&mut self, index: usize) {
+        if self.n_visible_objs == MAX_LINE_SPRITES {
             return;
         }
         let y = self.oam[index * 4];
-        let height = if self.lcdc & 0x04 != 0 { 16 } else { 8 };
+        let x = self.oam[index * 4 + 1];
+        let height = if self.lcdc & LCDC_OBJ_SIZE != 0 {
+            16
+        } else {
+            8
+        };
         let top = y as i32 - 16;
-        if (top..top + height).contains(&(self.ly as i32)) {
-            self.sprites[self.sprite_count] = Sprite {
-                x: self.oam[index * 4 + 1],
-                y,
-                oam_index: index as u8,
-                fetched: false,
-            };
-            self.sprite_count += 1;
+        if top <= self.ly as i32 && top + height > self.ly as i32 {
+            let count = self.n_visible_objs;
+            let slot = (0..count)
+                .find(|&j| self.objects_x[j] <= x)
+                .unwrap_or(count);
+            self.visible_objs.copy_within(slot..count, slot + 1);
+            self.objects_x.copy_within(slot..count, slot + 1);
+            self.objects_y.copy_within(slot..count, slot + 1);
+            self.visible_objs[slot] = index as u8;
+            self.objects_x[slot] = x;
+            self.objects_y[slot] = y;
+            self.n_visible_objs += 1;
         }
     }
 
     fn start_transfer(&mut self) {
         self.mode = MODE_TRANSFER;
-        self.fetcher = Fetcher::new(false, true);
-        self.bg_len = 0;
-        self.obj_len = 0;
-        self.lcd_x = -8;
-        self.discard = self.scx % 8;
-        self.sprite_fetch = None;
+        self.pipeline = Pipeline::Delay(PIPELINE_START_DELAY);
+        self.pipeline_sleep = 0;
     }
 
-    fn transfer_dot(&mut self) {
-        if self.sprite_fetch.is_none() && self.lcdc & 0x02 != 0 {
-            let x = self.lcd_x + 8;
-            self.sprite_fetch = self.sprites[..self.sprite_count]
-                .iter()
-                .position(|sprite| !sprite.fetched && sprite.x as i16 <= x)
-                .map(|index| (index, 0));
+    fn end_transfer(&mut self) {
+        self.position_in_line = POSITION_START;
+        self.line_has_fractional_scrolling = false;
+        if self.fetcher_state == FETCH_HIGH_T1 || self.fetcher_state == FETCH_HIGH_T2 {
+            self.current_tile_data[1] = self.current_tile_data[0];
         }
-        if let Some((index, dots)) = self.sprite_fetch {
-            if self.bg_len == 0 || self.fetcher.since_push < SPRITE_FETCH_WAIT {
-                self.advance_fetcher();
-                return;
+        if self.ly < SCREEN_HEIGHT as u8 {
+            let row = self.ly as usize * SCREEN_WIDTH;
+            while (self.lcd_x as usize) < SCREEN_WIDTH {
+                let x = self.lcd_x as usize;
+                self.frame[row + x] = if x == 0 {
+                    self.blank_color()
+                } else {
+                    self.frame[row + x - 1]
+                };
+                self.lcd_x += 1;
             }
-            if dots + 1 < 6 {
-                self.sprite_fetch = Some((index, dots + 1));
-                return;
-            }
-            self.fetch_sprite(index);
-            self.sprite_fetch = None;
-            return;
         }
-
-        self.advance_fetcher();
-        if self.bg_len == 0 {
-            return;
+        if self.ly == SCREEN_HEIGHT as u8 - 1 {
+            self.window_y = 0xFF;
         }
-        if !self.fetcher.window && self.lcd_x >= 0 && self.discard == 0 && self.window_starts_here()
+        if !self.renders_color()
+            && self.wy_triggered
+            && self.lcdc & LCDC_WIN_ENABLE != 0
+            && self.wx == 166
         {
-            self.window_drawn = true;
-            self.bg_len = 0;
-            self.fetcher = Fetcher::new(true, false);
-            return;
-        }
-        let background = self.pop_bg();
-        if self.lcd_x < 0 {
-            self.lcd_x += 1;
-            return;
-        }
-        if self.discard > 0 {
-            self.discard -= 1;
-            return;
-        }
-        let object = self.pop_obj();
-        let pixel = if self.cgb {
-            self.cgb_pixel(background, object)
-        } else if self.compat {
-            self.compat_pixel(background, object)
+            self.wx_triggered = true;
+            self.window_tile_x = 1;
+            self.window_y = self.window_y.wrapping_add(1);
         } else {
-            self.dmg_pixel(background, object).0
-        };
-        self.frame[self.ly as usize * SCREEN_WIDTH + self.lcd_x as usize] = pixel;
-        self.lcd_x += 1;
+            self.wx_triggered = false;
+        }
+        self.mode = MODE_HBLANK;
+        self.hblank_started = true;
     }
 
-    /// The DMG shade of a pixel and, if an object supplied it, that object's palette.
-    fn dmg_pixel(&self, background: BgPixel, object: ObjPixel) -> (u16, Option<u8>) {
-        let bg_color = if self.lcdc & 0x01 != 0 {
-            background.color
+    fn start_pipeline(&mut self) {
+        self.disable_window_pixel_insertion_glitch = false;
+        self.bg_fifo.clear();
+        self.obj_fifo.clear();
+        self.bg_fifo.push_bg_row(0, 0, 0, false, false);
+        self.lcd_x = 0;
+        self.fetcher_state = FETCH_TILE_T1;
+        if self.first_line {
+            self.wx_triggered = false;
+        }
+    }
+
+    fn x_for_object_match(&self) -> u8 {
+        let x = self.position_in_line.wrapping_add(8);
+        if x > POSITION_START { 0 } else { x }
+    }
+
+    fn objects_enabled(&self) -> bool {
+        self.lcdc & LCDC_OBJ_ENABLE != 0 || self.renders_color()
+    }
+
+    fn object_at_match(&self) -> bool {
+        self.n_visible_objs != 0
+            && self.objects_enabled()
+            && self.objects_x[self.n_visible_objs - 1] == self.x_for_object_match()
+    }
+
+    /// Runs one dot of mode 3 and returns whether the line is finished.
+    fn pipeline_dot(&mut self) -> bool {
+        if self.pipeline_sleep > 0 {
+            self.pipeline_sleep -= 1;
+            return false;
+        }
+        if self.pipeline == Pipeline::Window
+            && !self.window_event_possible()
+            && (self.n_visible_objs == 0
+                || self.objects_x[self.n_visible_objs - 1] > self.x_for_object_match())
+        {
+            self.object_fetch_aborted = false;
+            self.render_pixel();
+            self.advance_fetcher();
+            return self.position_in_line == SCREEN_WIDTH as u8;
+        }
+        loop {
+            match self.pipeline {
+                Pipeline::Delay(0) => {
+                    self.start_pipeline();
+                    self.pipeline = Pipeline::Window;
+                }
+                Pipeline::Delay(dots) => {
+                    self.pipeline = Pipeline::Delay(dots - 1);
+                    return false;
+                }
+                Pipeline::Window => {
+                    self.pipeline = Pipeline::AfterWindow;
+                    if self.activate_window() {
+                        return false;
+                    }
+                }
+                Pipeline::AfterWindow => {
+                    if self.wx == self.position_in_line.wrapping_add(7)
+                        && (!self.renders_color() || self.wx == 0)
+                        && self.wx_triggered
+                        && !self.window_is_being_fetched
+                        && self.fetcher_state == FETCH_TILE_T1
+                        && self.bg_fifo.size == 8
+                    {
+                        self.insert_bg_pixel = true;
+                    }
+                    while self.n_visible_objs != 0
+                        && self.objects_x[self.n_visible_objs - 1] < self.x_for_object_match()
+                    {
+                        self.n_visible_objs -= 1;
+                    }
+                    self.during_object_fetch = true;
+                    self.pipeline = Pipeline::Objects;
+                }
+                Pipeline::Objects => {
+                    self.pipeline = if self.object_at_match() {
+                        Pipeline::ObjectWait
+                    } else {
+                        Pipeline::Pixel
+                    };
+                }
+                Pipeline::ObjectWait => {
+                    let waiting = self.fetcher_state < FETCH_HIGH_T2 || self.bg_fifo.size == 0;
+                    self.advance_fetcher();
+                    self.pipeline = if waiting {
+                        Pipeline::AfterObjectWait
+                    } else {
+                        Pipeline::ObjectAttributes
+                    };
+                    return false;
+                }
+                Pipeline::AfterObjectWait => {
+                    self.pipeline = if self.object_fetch_aborted {
+                        Pipeline::Pixel
+                    } else {
+                        Pipeline::ObjectWait
+                    };
+                }
+                Pipeline::ObjectAttributes => {
+                    if self.object_fetch_aborted {
+                        self.pipeline = Pipeline::Pixel;
+                        continue;
+                    }
+                    self.advance_fetcher();
+                    let entry = self.visible_objs[self.n_visible_objs - 1] as usize * 4;
+                    self.object_tile = self.oam[entry + 2];
+                    self.object_flags = self.oam[entry + 3];
+                    self.pipeline = Pipeline::ObjectLow;
+                    self.pipeline_sleep = 1;
+                    return false;
+                }
+                Pipeline::ObjectLow => {
+                    if self.object_fetch_aborted {
+                        self.pipeline = Pipeline::Pixel;
+                        continue;
+                    }
+                    self.object_line_address = self.object_line_address();
+                    self.object_tile_data[0] = self.vram[self.object_line_address as usize];
+                    self.pipeline = Pipeline::ObjectHigh;
+                    self.pipeline_sleep = 1;
+                    return false;
+                }
+                Pipeline::ObjectHigh => {
+                    if self.object_fetch_aborted {
+                        self.pipeline = Pipeline::Pixel;
+                        continue;
+                    }
+                    self.during_object_fetch = false;
+                    self.object_line_address = self.object_line_address();
+                    self.object_tile_data[1] = self.vram[self.object_line_address as usize + 1];
+                    self.pipeline = Pipeline::ObjectPush;
+                    return false;
+                }
+                Pipeline::ObjectPush => {
+                    let flags = self.object_flags;
+                    let palette = if self.cgb {
+                        flags & 0x07
+                    } else {
+                        (flags >> 4) & 1
+                    };
+                    let priority = if self.x_priority {
+                        0
+                    } else {
+                        self.visible_objs[self.n_visible_objs - 1]
+                    };
+                    let [lower, upper] = self.object_tile_data;
+                    self.obj_fifo.overlay_object_row(
+                        lower,
+                        upper,
+                        palette,
+                        flags & 0x80 != 0,
+                        priority,
+                        flags & 0x20 != 0,
+                    );
+                    self.n_visible_objs -= 1;
+                    self.pipeline = Pipeline::Objects;
+                }
+                Pipeline::Pixel => {
+                    self.object_fetch_aborted = false;
+                    self.during_object_fetch = false;
+                    self.render_pixel();
+                    self.advance_fetcher();
+                    if self.position_in_line == SCREEN_WIDTH as u8 {
+                        return true;
+                    }
+                    self.pipeline = Pipeline::Window;
+                    return false;
+                }
+            }
+        }
+    }
+
+    /// Whether the window could start, or have a pixel inserted, at this
+    /// position. When it can't, a dot of mode 3 needs no window handling.
+    fn window_event_possible(&self) -> bool {
+        let next = self.position_in_line.wrapping_add(7);
+        if self.wx_triggered {
+            return self.wx == next;
+        }
+        self.wy_triggered
+            && self.lcdc & LCDC_WIN_ENABLE != 0
+            && (self.wx == 0 || self.wx == next || self.wx == next.wrapping_sub(1))
+    }
+
+    /// Starts fetching the window if it begins here, and returns whether that
+    /// takes an extra dot.
+    fn activate_window(&mut self) -> bool {
+        if self.wx_triggered || !self.wy_triggered || self.lcdc & LCDC_WIN_ENABLE == 0 {
+            return false;
+        }
+        let position = self.position_in_line;
+        let cgb = self.renders_color();
+        let mut activate = false;
+        if self.wx == 0 {
+            activate = position == 0u8.wrapping_sub(7)
+                || position == POSITION_START && self.scx & 7 != 0
+                || (0u8.wrapping_sub(15)..=0u8.wrapping_sub(8)).contains(&position);
+        } else if (self.wx as u16) < 166 + cgb as u16 {
+            activate = self.wx == position.wrapping_add(7)
+                || !cgb && self.wx == position.wrapping_add(6) && !self.wx_just_changed;
+        }
+        if activate {
+            self.window_y = self.window_y.wrapping_add(1);
+            self.window_tile_x = 0;
+            self.bg_fifo.clear();
+            self.wx_triggered = true;
+            self.fetcher_state = FETCH_TILE_T1;
+            self.window_is_being_fetched = true;
+            return self.wx == 0 && self.scx & 7 != 0 && !cgb;
+        }
+        if !cgb && self.wx == 166 && self.wx == position.wrapping_add(7) {
+            self.window_y = self.window_y.wrapping_add(1);
+        }
+        false
+    }
+
+    fn object_line_address(&self) -> u16 {
+        let height_16 = self.lcdc & LCDC_OBJ_SIZE != 0;
+        let mask = if height_16 { 0x0F } else { 0x07 };
+        let y = self.objects_y[self.n_visible_objs - 1];
+        let mut tile_y = self.ly.wrapping_sub(y) & mask;
+        if self.object_flags & 0x40 != 0 {
+            tile_y ^= mask;
+        }
+        let tile = if height_16 {
+            self.object_tile & 0xFE
+        } else {
+            self.object_tile
+        };
+        let mut address = tile as u16 * 0x10 + tile_y as u16 * 2;
+        if self.cgb && self.object_flags & 0x08 != 0 {
+            address += 0x2000;
+        }
+        address
+    }
+
+    fn render_pixel(&mut self) {
+        if self.n_visible_objs != 0
+            && self.objects_enabled()
+            && self.objects_x[self.n_visible_objs - 1] == 0
+        {
+            return;
+        }
+        if self.bg_fifo.size == 0 {
+            return;
+        }
+        let background = if std::mem::take(&mut self.insert_bg_pixel) {
+            FifoItem::default()
+        } else {
+            self.bg_fifo.pop()
+        };
+        let mut bg_priority = background.bg_priority;
+        let mut object = None;
+        if self.obj_fifo.size != 0 {
+            let item = self.obj_fifo.pop();
+            if item.pixel != 0 && self.lcdc & LCDC_OBJ_ENABLE != 0 {
+                bg_priority |= item.bg_priority;
+                object = Some(item);
+            }
+        }
+
+        let position = self.position_in_line;
+        if position.wrapping_add(16) < 8 {
+            if position == 0u8.wrapping_sub(17) {
+                self.position_in_line = POSITION_START;
+            } else if position & 7 == self.scx & 7 {
+                self.position_in_line = 0u8.wrapping_sub(8);
+            } else if self.window_is_being_fetched && position & 7 == 6 && self.scx & 7 == 7 {
+                self.position_in_line = 0u8.wrapping_sub(8);
+            } else if position == 0u8.wrapping_sub(9) {
+                self.position_in_line = POSITION_START;
+                return;
+            } else {
+                self.line_has_fractional_scrolling = true;
+            }
+        }
+        self.window_is_being_fetched = false;
+
+        if self.position_in_line >= SCREEN_WIDTH as u8 {
+            self.position_in_line = self.position_in_line.wrapping_add(1);
+            return;
+        }
+
+        let mut bg_enabled = true;
+        if self.lcdc & LCDC_BG_ENABLE == 0 {
+            if self.cgb {
+                bg_priority = false;
+            } else {
+                bg_enabled = false;
+            }
+        }
+        let bg_pixel = if bg_enabled { background.pixel } else { 0 };
+        if bg_pixel != 0 && bg_priority {
+            object = None;
+        }
+        let color = match object {
+            Some(item) if self.cgb => palette_color(&self.obj_palettes, item.palette, item.pixel),
+            Some(item) => {
+                let palette = if item.palette != 0 {
+                    self.obp1
+                } else {
+                    self.obp0
+                };
+                let shade = (palette >> (item.pixel * 2)) & 3;
+                if self.compat {
+                    palette_color(&self.obj_palettes, item.palette, shade)
+                } else {
+                    shade as u16
+                }
+            }
+            None if self.cgb => palette_color(&self.bg_palettes, background.palette, bg_pixel),
+            None => {
+                let shade = (self.bgp >> (bg_pixel * 2)) & 3;
+                if self.compat {
+                    palette_color(&self.bg_palettes, 0, shade)
+                } else {
+                    shade as u16
+                }
+            }
+        };
+        if self.ly < SCREEN_HEIGHT as u8 && (self.lcd_x as usize) < SCREEN_WIDTH {
+            self.frame[self.ly as usize * SCREEN_WIDTH + self.lcd_x as usize] = color;
+        }
+        self.position_in_line = self.position_in_line.wrapping_add(1);
+        self.lcd_x = self.lcd_x.wrapping_add(1);
+    }
+
+    fn fetcher_row(&self) -> u8 {
+        if self.wx_triggered {
+            self.window_y
+        } else {
+            self.ly.wrapping_add(self.scy)
+        }
+    }
+
+    fn update_wx_glitch(&mut self) {
+        if !self.renders_color() {
+            return;
+        }
+        if self.lcdc & LCDC_WIN_ENABLE == 0 || !self.wy_triggered {
+            self.cgb_wx_glitch = false;
+            return;
+        }
+        if self.wx == 0 {
+            let position = self.position_in_line;
+            self.cgb_wx_glitch = position.wrapping_add(16) <= 8
+                || position == 0u8.wrapping_sub(7) && self.line_has_fractional_scrolling;
+            return;
+        }
+        self.cgb_wx_glitch = self
+            .position_in_line
+            .wrapping_add(7)
+            .wrapping_add(self.window_is_being_fetched as u8)
+            == self.wx;
+    }
+
+    fn tile_data_address(&self, y: u8) -> u16 {
+        let mut address = if self.lcdc & LCDC_TILE_SEL != 0 {
+            self.current_tile as u16 * 0x10
+        } else {
+            (0x1000 + self.current_tile as i8 as i32 * 0x10) as u16
+        };
+        if self.current_tile_attributes & 0x08 != 0 {
+            address += 0x2000;
+        }
+        let flip = if self.current_tile_attributes & 0x40 != 0 {
+            7
         } else {
             0
         };
-        if object.color != 0 && self.lcdc & 0x02 != 0 && (!object.behind_bg || bg_color == 0) {
-            let palette = if object.palette != 0 {
-                self.obp1
-            } else {
-                self.obp0
-            };
-            (
-                ((palette >> (object.color * 2)) & 3) as u16,
-                Some(object.palette),
-            )
+        address + ((y & 7) ^ flip) as u16 * 2
+    }
+
+    fn fetcher_data_row(&self) -> u8 {
+        if self.renders_color() {
+            self.fetcher_y
         } else {
-            (((self.bgp >> (bg_color * 2)) & 3) as u16, None)
+            self.fetcher_row()
         }
-    }
-
-    fn compat_pixel(&self, background: BgPixel, object: ObjPixel) -> u16 {
-        match self.dmg_pixel(background, object) {
-            (shade, Some(palette)) => palette_color(&self.obj_palettes, palette, shade as u8),
-            (shade, None) => palette_color(&self.bg_palettes, 0, shade as u8),
-        }
-    }
-
-    /// LCDC bit 0 is the master priority switch on the CGB: when clear, objects
-    /// are drawn over the background regardless of either's priority bits.
-    fn cgb_pixel(&self, background: BgPixel, object: ObjPixel) -> u16 {
-        let object_visible = object.color != 0
-            && self.lcdc & 0x02 != 0
-            && (self.lcdc & 0x01 == 0
-                || background.color == 0
-                || !background.priority && !object.behind_bg);
-        if object_visible {
-            palette_color(&self.obj_palettes, object.palette, object.color)
-        } else {
-            palette_color(&self.bg_palettes, background.palette, background.color)
-        }
-    }
-
-    fn window_starts_here(&self) -> bool {
-        self.lcdc & 0x20 != 0
-            && self.window_y_hit
-            && self.wx <= 166
-            && self.lcd_x + 7 >= self.wx as i16
-    }
-
-    fn pop_bg(&mut self) -> BgPixel {
-        let pixel = self.bg_fifo[8 - self.bg_len as usize];
-        self.bg_len -= 1;
-        pixel
-    }
-
-    fn pop_obj(&mut self) -> ObjPixel {
-        if self.obj_len == 0 {
-            return ObjPixel::default();
-        }
-        let pixel = self.obj_fifo[0];
-        self.obj_fifo.copy_within(1.., 0);
-        self.obj_fifo[7] = ObjPixel::default();
-        self.obj_len -= 1;
-        pixel
     }
 
     fn advance_fetcher(&mut self) {
-        let fetcher = self.fetcher;
-        self.fetcher.since_push = fetcher.since_push.saturating_add(1);
-        match fetcher.step {
-            FetchStep::Push => {
-                if self.bg_len == 0 {
-                    let flip = fetcher.attributes & 0x20 != 0;
-                    for (column, pixel) in self.bg_fifo.iter_mut().enumerate() {
-                        let bit = if flip { column } else { 7 - column };
-                        *pixel = BgPixel {
-                            color: (fetcher.low >> bit) & 1 | ((fetcher.high >> bit) & 1) << 1,
-                            palette: fetcher.attributes & 0x07,
-                            priority: fetcher.attributes & 0x80 != 0,
-                        };
-                    }
-                    self.bg_len = 8;
-                    self.fetcher.step = FetchStep::Tile;
-                    self.fetcher.dot = 0;
-                    self.fetcher.since_push = 0;
-                    if fetcher.warmup {
-                        self.fetcher.warmup = false;
-                    } else {
-                        self.fetcher.column = fetcher.column.wrapping_add(1);
-                    }
+        match self.fetcher_state {
+            FETCH_TILE_T1 => {
+                self.update_wx_glitch();
+                if self.lcdc & LCDC_WIN_ENABLE == 0 {
+                    self.wx_triggered = false;
                 }
-            }
-            step => {
-                if fetcher.dot == 0 {
-                    self.fetcher.dot = 1;
-                    return;
-                }
-                self.fetcher.dot = 0;
-                match step {
-                    FetchStep::Tile => {
-                        let address = self.tile_map_address();
-                        self.fetcher.tile = self.vram[address];
-                        self.fetcher.attributes = if self.cgb {
-                            self.vram[0x2000 + address]
-                        } else {
-                            0
-                        };
-                        self.fetcher.step = FetchStep::Low;
-                    }
-                    FetchStep::Low => {
-                        self.fetcher.low = self.vram[self.tile_data_address()];
-                        self.fetcher.step = FetchStep::High;
-                    }
-                    _ => {
-                        self.fetcher.high = self.vram[self.tile_data_address() + 1];
-                        self.fetcher.step = FetchStep::Push;
-                    }
-                }
-            }
-        }
-    }
-
-    fn tile_row(&self) -> u8 {
-        if self.fetcher.window {
-            self.window_line % 8
-        } else {
-            self.ly.wrapping_add(self.scy) % 8
-        }
-    }
-
-    fn tile_map_address(&self) -> usize {
-        let (map_bit, row, column) = if self.fetcher.window {
-            (
-                0x40,
-                self.window_line as usize / 8,
-                self.fetcher.column as usize,
-            )
-        } else {
-            (
-                0x08,
-                self.ly.wrapping_add(self.scy) as usize / 8,
-                (self.scx as usize / 8 + self.fetcher.column as usize) % 32,
-            )
-        };
-        let map = if self.lcdc & map_bit != 0 {
-            0x1C00
-        } else {
-            0x1800
-        };
-        map + row * 32 + column % 32
-    }
-
-    fn tile_data_address(&self) -> usize {
-        let tile = self.fetcher.tile;
-        let attributes = self.fetcher.attributes;
-        let base = if self.lcdc & 0x10 != 0 {
-            tile as usize * 16
-        } else {
-            (0x1000 + (tile as i8 as i32) * 16) as usize
-        };
-        let bank = if attributes & 0x08 != 0 { 0x2000 } else { 0 };
-        let row = if attributes & 0x40 != 0 {
-            7 - self.tile_row()
-        } else {
-            self.tile_row()
-        };
-        bank + base + row as usize * 2
-    }
-
-    fn fetch_sprite(&mut self, index: usize) {
-        self.sprites[index].fetched = true;
-        let sprite = self.sprites[index];
-        let entry = sprite.oam_index as usize * 4;
-        let flags = self.oam[entry + 3];
-        let height = if self.lcdc & 0x04 != 0 { 16 } else { 8 };
-        let mut row = (self.ly as i32 - (sprite.y as i32 - 16)) as u8 % height;
-        if flags & 0x40 != 0 {
-            row = height - 1 - row;
-        }
-        let mut tile = self.oam[entry + 2];
-        if height == 16 {
-            tile = tile & 0xFE | row / 8;
-        }
-        let bank = if self.cgb && flags & 0x08 != 0 {
-            0x2000
-        } else {
-            0
-        };
-        let address = bank + tile as usize * 16 + (row % 8) as usize * 2;
-        let (low, high) = (self.vram[address], self.vram[address + 1]);
-        let palette = if self.cgb {
-            flags & 0x07
-        } else {
-            (flags >> 4) & 1
-        };
-
-        while self.obj_len < 8 {
-            self.obj_fifo[self.obj_len as usize] = ObjPixel::default();
-            self.obj_len += 1;
-        }
-        let skip = (self.lcd_x.max(0) + 8 - sprite.x as i16).max(0) as usize;
-        for column in skip..8 {
-            let bit = if flags & 0x20 != 0 {
-                column
-            } else {
-                7 - column
-            };
-            let color = (low >> bit) & 1 | ((high >> bit) & 1) << 1;
-            let slot = &mut self.obj_fifo[column - skip];
-            let wins = slot.color == 0 || !self.x_priority && sprite.oam_index < slot.oam_index;
-            if color != 0 && wins {
-                *slot = ObjPixel {
-                    color,
-                    palette,
-                    behind_bg: flags & 0x80 != 0,
-                    oam_index: sprite.oam_index,
+                let map_bit = if self.wx_triggered {
+                    LCDC_WIN_MAP
+                } else {
+                    LCDC_BG_MAP
                 };
+                let map = if self.lcdc & map_bit != 0 {
+                    0x1C00
+                } else {
+                    0x1800
+                };
+                let y = self.fetcher_row();
+                let x = if self.wx_triggered {
+                    self.window_tile_x
+                } else if self.position_in_line.wrapping_add(16) < 8 {
+                    self.scx >> 3
+                } else {
+                    let early = (self.renders_color() && !self.during_object_fetch) as u8;
+                    (self
+                        .scx
+                        .wrapping_add(self.position_in_line)
+                        .wrapping_add(8)
+                        .wrapping_sub(early)
+                        / 8)
+                        & 0x1F
+                };
+                self.fetcher_y = y;
+                self.last_tile_index_address = map + x as u16 + (y / 8) as u16 * 32;
+                self.fetcher_state += 1;
+            }
+            FETCH_TILE_T2 => {
+                if !self.cgb_wx_glitch {
+                    let address = self.last_tile_index_address as usize;
+                    self.current_tile = self.vram[address];
+                    self.current_tile_attributes = if self.cgb {
+                        self.vram[address + 0x2000]
+                    } else {
+                        0
+                    };
+                }
+                self.fetcher_state += 1;
+            }
+            FETCH_LOW_T1 => {
+                self.update_wx_glitch();
+                self.last_tile_data_address = self.tile_data_address(self.fetcher_data_row());
+                self.fetcher_state += 1;
+            }
+            FETCH_LOW_T2 => {
+                self.current_tile_data[0] = if self.cgb_wx_glitch {
+                    self.current_tile_data[1]
+                } else {
+                    self.vram[self.last_tile_data_address as usize]
+                };
+                self.fetcher_state += 1;
+            }
+            FETCH_HIGH_T1 => {
+                self.update_wx_glitch();
+                self.last_tile_data_address = self.tile_data_address(self.fetcher_data_row()) + 1;
+                self.fetcher_state += 1;
+            }
+            FETCH_HIGH_T2 => {
+                let glitch = self.cgb_wx_glitch;
+                self.current_tile_data[1] = if glitch {
+                    self.current_tile_data[0]
+                } else {
+                    self.vram[self.last_tile_data_address as usize]
+                };
+                if self.wx_triggered {
+                    self.window_tile_x = (self.window_tile_x + 1) & 0x1F;
+                }
+                self.fetcher_state = FETCH_PUSH;
+                if !glitch {
+                    self.push_fetched_tile();
+                }
+            }
+            _ => self.push_fetched_tile(),
+        }
+    }
+
+    fn push_fetched_tile(&mut self) {
+        if self.bg_fifo.size > 0 {
+            return;
+        }
+        if self.wy_triggered
+            && self.lcdc & LCDC_WIN_ENABLE == 0
+            && !self.renders_color()
+            && !self.disable_window_pixel_insertion_glitch
+        {
+            let mut logical_position = self.position_in_line.wrapping_add(7);
+            if logical_position > 167 {
+                logical_position = 0;
+            }
+            if self.wx == logical_position {
+                self.bg_fifo.read_end = self.bg_fifo.read_end.wrapping_sub(1) & 7;
+                self.bg_fifo.items[self.bg_fifo.read_end as usize] = FifoItem::default();
+                self.bg_fifo.size = 1;
+                return;
             }
         }
+        let attributes = self.current_tile_attributes;
+        let [lower, upper] = self.current_tile_data;
+        self.bg_fifo.push_bg_row(
+            lower,
+            upper,
+            attributes & 0x07,
+            attributes & 0x80 != 0,
+            attributes & 0x20 != 0,
+        );
+        self.fetcher_state = FETCH_TILE_T1;
     }
 
     fn dots_until(&self, ly: u8, dot: u32) -> u32 {
@@ -753,6 +1252,7 @@ impl Ppu {
         match self.mode {
             MODE_TRANSFER => earliest.saturating_sub(self.dot).max(1),
             MODE_OAM_SCAN => earliest - self.dot,
+            MODE_HBLANK if self.stat_mode != MODE_HBLANK => 1,
             MODE_HBLANK if self.first_line && self.dot < FIRST_LINE_TRANSFER_DOT => {
                 first_line_earliest - self.dot
             }
@@ -776,6 +1276,9 @@ impl Ppu {
         if !self.enabled() {
             return usize::MAX;
         }
+        if self.dmg_mode_change_pending() || self.stat_mode != self.visible_mode {
+            return 1;
+        }
         let stat = if enabled & STAT_INTERRUPT != 0 {
             self.stat
         } else {
@@ -783,7 +1286,8 @@ impl Ppu {
         };
         let mut dots = u32::MAX;
         if enabled & VBLANK_INTERRUPT != 0 || stat & (STAT_VBLANK | STAT_OAM) != 0 {
-            dots = dots.min(self.dots_until(SCREEN_HEIGHT as u8, 0));
+            let vblank = SCREEN_HEIGHT as u8;
+            dots = dots.min(self.dots_until(vblank, self.cpu_visible_dot(vblank)));
         }
         if stat & STAT_OAM != 0 && self.renders_color() {
             dots =
@@ -793,7 +1297,8 @@ impl Ppu {
             dots = dots.min(self.dots_until_hblank());
         }
         if stat & STAT_OAM != 0 {
-            dots = dots.min(self.dots_until(self.next_visible_line(), 0));
+            let line = self.next_visible_line();
+            dots = dots.min(self.dots_until(line, self.cpu_visible_dot(line)));
         }
         if stat & STAT_LYC != 0 && self.lyc < LINES {
             dots = dots.min(self.dots_until(self.lyc, 1));
@@ -920,7 +1425,12 @@ impl Ppu {
         let previous = row - 8;
         match row & 0x18 {
             0x10 => {
-                let (a, b, c, d) = (word(self, -16), word(self, -8), word(self, 0), word(self, -4));
+                let (a, b, c, d) = (
+                    word(self, -16),
+                    word(self, -8),
+                    word(self, 0),
+                    word(self, -4),
+                );
                 self.set_oam_word(previous, (b & (a | c | d)) | (a & c & d));
                 self.copy_oam_row(previous, row - 16);
             }
@@ -993,19 +1503,53 @@ impl Ppu {
         }
     }
 
+    /// The LCDC value the DMG's pixel pipeline sees in the T-cycle before a
+    /// write fully lands. Tile data, map and object size selects switch
+    /// early, as does turning the window off; at the very start of a line
+    /// the background enable switches early too, and objects turn off early
+    /// there or while one is being fetched.
+    pub fn dmg_lcdc_transition(&self, old: u8, value: u8) -> u8 {
+        let early = LCDC_TILE_SEL | LCDC_BG_MAP | LCDC_WIN_MAP | LCDC_OBJ_SIZE;
+        let mut lcdc = old & !early | value & early;
+        lcdc &= value | !LCDC_WIN_ENABLE;
+        if self.position_in_line == 0 {
+            lcdc = lcdc & !LCDC_BG_ENABLE | value & LCDC_BG_ENABLE;
+        }
+        if value & LCDC_OBJ_ENABLE == 0 && (self.position_in_line == 0 || self.during_object_fetch)
+        {
+            lcdc &= !LCDC_OBJ_ENABLE;
+        }
+        lcdc
+    }
+
     pub fn write_register(&mut self, addr: u16, value: u8) -> u8 {
         match addr {
             0xFF40 => {
                 let was_enabled = self.enabled();
+                let old = self.lcdc;
+                if !self.renders_color()
+                    && old & LCDC_OBJ_ENABLE != 0
+                    && value & LCDC_OBJ_ENABLE == 0
+                    && self.during_object_fetch
+                {
+                    self.object_fetch_aborted = true;
+                    self.pipeline_sleep = 0;
+                }
+                if old & LCDC_WIN_ENABLE != 0
+                    && value & LCDC_WIN_ENABLE == 0
+                    && self.window_is_being_fetched
+                {
+                    self.disable_window_pixel_insertion_glitch = true;
+                }
                 self.lcdc = value;
+                self.wy_check_pending = true;
                 if was_enabled && !self.enabled() {
                     self.ly = 0;
                     self.dot = 0;
                     self.mode = MODE_HBLANK;
                     self.visible_mode = MODE_HBLANK;
-                    self.window_line = 0;
-                    self.window_drawn = false;
-                    self.window_y_hit = false;
+                    self.stat_mode = MODE_HBLANK;
+                    self.wy_triggered = false;
                     let blank = self.blank_color();
                     self.frame.fill(blank);
                 } else if !was_enabled && self.enabled() {
@@ -1013,8 +1557,13 @@ impl Ppu {
                     self.dot = LCD_ON_DOT;
                     self.mode = MODE_HBLANK;
                     self.visible_mode = MODE_HBLANK;
+                    self.stat_mode = MODE_HBLANK;
                     self.first_line = true;
-                    self.sprite_count = 0;
+                    self.n_visible_objs = 0;
+                    self.window_y = 0xFF;
+                    self.wy_triggered = false;
+                    self.position_in_line = POSITION_START;
+                    self.line_has_fractional_scrolling = false;
                 }
             }
             0xFF41 => self.stat = value & 0x78,
@@ -1025,7 +1574,10 @@ impl Ppu {
             0xFF47 => self.bgp = value,
             0xFF48 => self.obp0 = value,
             0xFF49 => self.obp1 = value,
-            0xFF4A => self.wy = value,
+            0xFF4A => {
+                self.wy = value;
+                self.wy_check_pending = true;
+            }
             _ => self.wx = value,
         }
         if self.enabled() {
@@ -1087,9 +1639,10 @@ mod tests {
         cases.push(vec![64, 64, 64, 64, 64, 167, 167, 167, 167, 167]);
         cases.push(vec![0, 8]);
         cases.push(vec![1, 9]);
+        let base = transfer_dots(&[], 0);
         let mut failures = Vec::new();
         for xs in &cases {
-            let measured = transfer_dots(xs, 0) - MIN_TRANSFER_DOTS;
+            let measured = transfer_dots(xs, 0) - base;
             let expected = expected_penalty(xs, 0);
             if measured != expected {
                 failures.push(format!("{xs:?}: measured {measured}, expected {expected}"));

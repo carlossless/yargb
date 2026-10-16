@@ -32,6 +32,9 @@ fn is_oam_bug_address(addr: u16) -> bool {
 
 /// T-cycles into its M-cycle at which a CPU read happens.
 const OAM_BUG_READ_T: u32 = 4;
+/// T-cycles into its M-cycle at which a CPU write lands, for most registers.
+/// Reads see the hardware at the end of their M-cycle.
+const CPU_WRITE_T: usize = 3;
 
 /// Which console is emulated.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -125,7 +128,7 @@ impl MMU {
         let cgb_hardware = model == Model::Cgb;
         let cgb = cgb_hardware && cartridge.supports_cgb();
         let compat = cgb_hardware && !cgb;
-        MMU {
+        let mut mmu = MMU {
             cgb,
             compat,
             cartridge,
@@ -160,11 +163,20 @@ impl MMU {
             exit_request: false,
             code_refs: [0; 0x10000],
             dirty_code: Vec::new(),
+        };
+        if !cgb_hardware {
+            let logo: [u8; 48] = std::array::from_fn(|i| mmu.cartridge.read_rom(0x104 + i as u16));
+            mmu.ppu.load_dmg_boot_screen(&logo);
         }
+        mmu
     }
 
     pub fn has_oam_bug(&self) -> bool {
         !self.cgb
+    }
+
+    pub fn is_cgb(&self) -> bool {
+        self.cgb
     }
 
     pub fn dots_per_m_cycle(&self) -> usize {
@@ -608,6 +620,48 @@ impl MMU {
         if m_cycles > 0 {
             self.tick_components(m_cycles * 4);
         }
+    }
+
+    /// Starts the M-cycle of a CPU write and lands the write where the
+    /// hardware does: on T3 for most registers, earlier or later for some of
+    /// the PPU's, which on the DMG also see an intermediate value for a dot.
+    pub fn begin_cpu_write(&mut self, addr: u16, value: u8) {
+        match (addr, self.cgb) {
+            (0xFF40, false) => {
+                let old = self.read_byte(addr);
+                self.begin_cycle(CPU_WRITE_T - 1);
+                let transition = self.ppu.dmg_lcdc_transition(old, value);
+                self.cpu_write(addr, transition);
+                self.finish_two_step_write(addr, value);
+            }
+            (0xFF47..=0xFF49, false) => {
+                let transition = self.read_byte(addr) | value;
+                self.write_at(CPU_WRITE_T - 1, addr, transition);
+                self.finish_two_step_write(addr, value);
+            }
+            (0xFF42 | 0xFF43, false) | (0xFF47..=0xFF49, true) => {
+                self.write_at(CPU_WRITE_T - 1, addr, value)
+            }
+            (0xFF4B, false) => {
+                self.write_at(4, addr, value);
+                self.ppu.wx_just_changed = true;
+            }
+            (0xFF40 | 0xFF43 | 0xFF4A | 0xFF4B, _) => self.write_at(4, addr, value),
+            _ => self.write_at(CPU_WRITE_T, addr, value),
+        }
+    }
+
+    fn write_at(&mut self, t_cycles: usize, addr: u16, value: u8) {
+        self.begin_cycle(t_cycles);
+        self.cpu_write(addr, value);
+    }
+
+    /// Lands the final value of a write whose intermediate value went in a
+    /// T-cycle earlier.
+    fn finish_two_step_write(&mut self, addr: u16, value: u8) {
+        self.tick_components(1);
+        self.cycle_t += 1;
+        self.cpu_write(addr, value);
     }
 
     /// Starts a new M-cycle and runs its first `t_cycles` T-cycles, which is

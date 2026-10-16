@@ -11,7 +11,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Module, default_libcall_names};
 
-use crate::cpu::{CPU, WRITE_T};
+use crate::cpu::CPU;
 use crate::mmu::{MMU, needs_sync};
 use crate::registers::Registers;
 
@@ -104,7 +104,7 @@ impl Jit {
                 let ticks = result as u32;
                 cpu.mmu.tick((ticks - cpu.jit_synced) as usize);
                 return Step {
-                    ticks: cpu.retire(ticks as usize),
+                    ticks: ticks as usize,
                     instructions,
                 };
             }
@@ -123,7 +123,7 @@ impl Jit {
             || cpu.halted
             || cpu.halt_bug
             || cpu.locked
-            || cpu.ime_delay > 0
+            || cpu.ime_toggle
             || cpu.mmu.dma_active()
             || cpu.stopped
             || cpu.mmu.stall_pending()
@@ -340,10 +340,11 @@ extern "C" fn jit_write(cpu: *mut CPU, addr: u32, value: u32) -> u32 {
     if needs_sync(addr) {
         cpu.jit_ticks -= 1;
         cpu.sync_jit_hardware();
-        cpu.mmu.begin_cycle(WRITE_T);
+        cpu.mmu.begin_cpu_write(addr, value as u8);
         cpu.jit_synced += 1;
+    } else {
+        cpu.mmu.cpu_write(addr, value as u8);
     }
-    cpu.mmu.cpu_write(addr, value as u8);
     cpu.mmu.take_exit_request() as u32
 }
 
@@ -1382,7 +1383,7 @@ mod tests {
                 cpu.halted,
                 cpu.halt_bug,
                 cpu.stopped,
-                cpu.ime_delay,
+                cpu.ime_toggle,
             )
         };
         for step in 0..steps {
