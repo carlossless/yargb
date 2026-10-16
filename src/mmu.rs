@@ -156,10 +156,6 @@ impl MMU {
         }
     }
 
-    pub fn is_cgb(&self) -> bool {
-        self.cgb
-    }
-
     pub fn dots_per_m_cycle(&self) -> usize {
         if self.double_speed { 2 } else { 4 }
     }

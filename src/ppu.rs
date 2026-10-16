@@ -308,10 +308,56 @@ impl Ppu {
             return 0;
         }
         let mut interrupts = 0;
-        for _ in 0..t_cycles {
-            interrupts |= self.step();
+        let mut remaining = t_cycles as u32;
+        while remaining > 0 {
+            let quiet = self.quiet_dots().min(remaining);
+            if quiet > 0 {
+                self.skip_quiet_dots(quiet);
+                remaining -= quiet;
+            } else {
+                interrupts |= self.step();
+                remaining -= 1;
+            }
         }
         interrupts
+    }
+
+    /// Dots from now in which stepping would change nothing but the dot
+    /// counter and the OAM scan, so they can be skipped in one go. Each run
+    /// stops a dot short of the next event for `step` to handle.
+    fn quiet_dots(&self) -> u32 {
+        if self.visible_mode != self.mode || self.dot == 0 {
+            return 0;
+        }
+        let end = match self.mode {
+            MODE_OAM_SCAN => OAM_SCAN_DOTS - 1,
+            MODE_HBLANK if self.first_line && self.dot < FIRST_LINE_TRANSFER_DOT => {
+                FIRST_LINE_TRANSFER_DOT - 1
+            }
+            MODE_HBLANK | MODE_VBLANK
+                if self.renders_color() && self.ly == SCREEN_HEIGHT as u8 - 1 =>
+            {
+                if self.dot < LINE_DOTS - CGB_VBLANK_OAM_LEAD {
+                    LINE_DOTS - CGB_VBLANK_OAM_LEAD - 1
+                } else {
+                    LINE_DOTS - 1
+                }
+            }
+            MODE_HBLANK | MODE_VBLANK => LINE_DOTS - 1,
+            _ => return 0,
+        };
+        end.saturating_sub(self.dot)
+    }
+
+    fn skip_quiet_dots(&mut self, dots: u32) {
+        if self.mode == MODE_OAM_SCAN {
+            for dot in self.dot..self.dot + dots {
+                if dot % 2 == 0 {
+                    self.scan_oam_entry((dot / 2) as usize);
+                }
+            }
+        }
+        self.dot += dots;
     }
 
     fn step(&mut self) -> u8 {

@@ -21,6 +21,9 @@ mod shift;
 /// hardware at the end of their M-cycle.
 pub(crate) const WRITE_T: usize = 3;
 
+/// The most M-cycles a halted or locked CPU skips at once.
+const MAX_IDLE_CYCLES: usize = 1024;
+
 pub struct CPU {
     regs: Registers,
     mmu: MMU,
@@ -892,7 +895,17 @@ impl CPU {
         if self.stopped && self.mmu.any_button_pressed() {
             self.stopped = false;
         }
-        let ticks = if self.halted || self.locked || self.stopped {
+        let ticks = if self.halted || self.locked {
+            let quiet = if self.locked {
+                MAX_IDLE_CYCLES
+            } else {
+                self.mmu
+                    .m_cycles_until_event(true)
+                    .clamp(1, MAX_IDLE_CYCLES)
+            };
+            self.mmu.tick(quiet);
+            quiet
+        } else if self.stopped {
             self.internal();
             1
         } else {
