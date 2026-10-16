@@ -33,10 +33,6 @@ jobs:
       uses: DeterminateSystems/magic-nix-cache-action@v15
     - name: Test
       run: nix develop --command cargo test
-    - name: Fetch test ROMs
-      run: nix develop --command scripts/test-roms.sh fetch
-    - name: Test ROM suites
-      run: nix develop --command cargo test --release -- --include-ignored
 
   build:
     runs-on: ubuntu-latest

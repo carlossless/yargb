@@ -1,6 +1,5 @@
-//! Public test ROM suites, checked against their own pass criteria. The ROMs
-//! are not part of the repository: `scripts/test-roms.sh fetch` downloads
-//! them into `target/test-roms`, or `YARGB_TEST_ROMS` points elsewhere.
+//! Public test ROM suites from `tests/roms`, checked against their own pass
+//! criteria.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,8 +10,9 @@ use crate::frontend::{SCREENSHOT_SHADES, to_rgb};
 use crate::mmu::Model;
 
 pub fn test_rom(path: &str) -> PathBuf {
-    let root = std::env::var("YARGB_TEST_ROMS").unwrap_or_else(|_| "target/test-roms".into());
-    Path::new(&root).join(path)
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/roms")
+        .join(path)
 }
 
 fn emulator(path: &Path, model: Option<Model>, jit: bool) -> Emulator {
@@ -52,7 +52,6 @@ const EXECUTION_MODES: [(bool, &str); 2] = [(true, "JIT"), (false, "interpreter"
 
 /// Blargg's CPU and memory timing suites report over the serial port.
 #[test]
-#[ignore = "needs test ROMs"]
 fn blargg_serial_suites() {
     let mut failures = Vec::new();
     for model in [Model::Dmg, Model::Cgb] {
@@ -78,7 +77,6 @@ fn blargg_serial_suites() {
 /// Blargg's other suites leave their result in cartridge RAM: a signature at
 /// $A001-$A003 and the result code, 0 for a pass, at $A000.
 #[test]
-#[ignore = "needs test ROMs"]
 fn blargg_memory_suites() {
     let mut failures = Vec::new();
     for (rom, model) in [
@@ -149,7 +147,6 @@ fn mooneye_roms(model: Model) -> Vec<PathBuf> {
 }
 
 #[test]
-#[ignore = "needs test ROMs"]
 fn mooneye_acceptance() {
     const PASS: &[u8] = &[3, 5, 8, 13, 21, 34];
     let mut failures = Vec::new();
@@ -216,7 +213,6 @@ fn screen_difference(rom: &Path, reference: &Path, frames: usize, jit: bool) -> 
 }
 
 #[test]
-#[ignore = "needs test ROMs"]
 fn acid2() {
     let mut failures = Vec::new();
     for (rom, reference) in [
@@ -235,7 +231,6 @@ fn acid2() {
 
 /// Mealybug Tearoom's expected images were captured on a DMG.
 #[test]
-#[ignore = "needs test ROMs"]
 fn mealybug_tearoom() {
     let mut failures = Vec::new();
     let mut references: Vec<PathBuf> = fs::read_dir(test_rom("mealybug/expected"))

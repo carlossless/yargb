@@ -58,7 +58,6 @@ fn assert_lockstep(
 }
 
 #[test]
-#[ignore = "needs test ROMs"]
 fn matches_interpreter_on_cpu_instrs() {
     let rom = std::fs::read(crate::test_roms::test_rom(
         "blargg/cpu_instrs/cpu_instrs.gb",
