@@ -1,5 +1,5 @@
 use crate::cartridge::Cartridge;
-use crate::mmu::{MMU, Model};
+use crate::mmu::{Mmu, Model};
 use crate::registers::WordRegister::{BC, DE, HL, SP};
 use crate::registers::{
     DEFAULT_CGB_COMPAT_REGISTERS, DEFAULT_CGB_REGISTERS, DEFAULT_DMG_REGISTERS, Registers,
@@ -24,9 +24,9 @@ const HALTED_SAMPLE_T: usize = 2;
 /// VBlank and STAT.
 const PPU_INTERRUPTS: u8 = 0b11;
 
-pub struct CPU {
+pub struct Cpu {
     regs: Registers,
-    mmu: MMU,
+    mmu: Mmu,
     pub halted: bool,
     stopped: bool,
     halt_bug: bool,
@@ -41,15 +41,15 @@ pub struct CPU {
 }
 
 struct Operation {
-    mneumonic: &'static str,
+    mnemonic: &'static str,
     size: usize,
-    execute: &'static dyn Fn(&mut CPU) -> usize,
+    execute: &'static dyn Fn(&mut Cpu) -> usize,
 }
 
 macro_rules! dop {
     ($name:tt, $execute:expr) => {
         Operation {
-            mneumonic: $name,
+            mnemonic: $name,
             size: 1,
             execute: &|cpu| {
                 // print!($name);
@@ -59,9 +59,9 @@ macro_rules! dop {
     };
     ($name:tt, u8, $execute:expr) => {
         Operation {
-            mneumonic: $name,
+            mnemonic: $name,
             size: 2,
-            execute: &|cpu: &mut CPU| {
+            execute: &|cpu: &mut Cpu| {
                 let value: u8 = cpu.fetch_byte();
                 // print!($name, value);
                 $execute(cpu, value)
@@ -70,9 +70,9 @@ macro_rules! dop {
     };
     ($name:tt, i8, $execute:expr) => {
         Operation {
-            mneumonic: $name,
+            mnemonic: $name,
             size: 2,
-            execute: &|cpu: &mut CPU| {
+            execute: &|cpu: &mut Cpu| {
                 let value = cpu.fetch_byte() as i8;
                 // print!($name, FormatAsSigned(value));
                 $execute(cpu, value)
@@ -81,9 +81,9 @@ macro_rules! dop {
     };
     ($name:tt, u16, $execute:expr) => {
         Operation {
-            mneumonic: $name,
+            mnemonic: $name,
             size: 3,
-            execute: &|cpu: &mut CPU| {
+            execute: &|cpu: &mut Cpu| {
                 let value: u16 = cpu.fetch_word();
                 // print!($name, value);
                 $execute(cpu, value)
@@ -92,14 +92,14 @@ macro_rules! dop {
     };
 }
 
-impl CPU {
+impl Cpu {
     const OPS: &'static [Operation] = &[
-        dop!("NOP", &CPU::nop), // 0x00 NOP
-        dop!("LD BC,{:#06X}", u16, &|cpu: &mut CPU, value| {
+        dop!("NOP", &Cpu::nop), // 0x00 NOP
+        dop!("LD BC,{:#06X}", u16, &|cpu: &mut Cpu, value| {
             cpu.regs.set_bc(value);
             3
         }), // 0x01 LD BC,d16
-        dop!("LD (BC),A", &|cpu: &mut CPU| {
+        dop!("LD (BC),A", &|cpu: &mut Cpu| {
             cpu.write(cpu.regs.get_bc(), cpu.regs.a);
             2
         }), // 0x02 LD (BC),A
@@ -107,17 +107,17 @@ impl CPU {
         dop!("INC B", &alu_inc_byte!(b)), // 0x04 INC B
         dop!("DEC B", &alu_dec_byte!(b)), // 0x05 DEC B
         dop!("LD B,{:#04X}", u8, &load!(b)), // 0x06 LD B,d8
-        dop!("RLCA", &CPU::rotate_left_circular_accumulator), // 0x07 RLCA
-        dop!("LD ({:#06X}),SP", u16, &|cpu: &mut CPU, addr| {
+        dop!("RLCA", &Cpu::rotate_left_circular_accumulator), // 0x07 RLCA
+        dop!("LD ({:#06X}),SP", u16, &|cpu: &mut Cpu, addr| {
             cpu.write_word(addr, cpu.regs.sp);
             5
         }), // 0x08 LD (a16),SP
-        dop!("ADD HL,BC", &|cpu: &mut CPU| {
+        dop!("ADD HL,BC", &|cpu: &mut Cpu| {
             let v = cpu.regs.get_bc();
             cpu.alu_add_to_hl(v);
             2
         }), // 0x09 ADD HL,BC
-        dop!("LD A,(BC)", &|cpu: &mut CPU| {
+        dop!("LD A,(BC)", &|cpu: &mut Cpu| {
             let a = cpu.regs.get_bc();
             cpu.regs.a = cpu.read(a);
             2
@@ -126,13 +126,13 @@ impl CPU {
         dop!("INC C", &alu_inc_byte!(c)), // 0x0C INC C
         dop!("DEC C", &alu_dec_byte!(c)), // 0x0D DEC C
         dop!("LD C,{:#04X}", u8, &load!(c)), // 0x0E LD C,d8
-        dop!("RRCA", &CPU::rotate_right_circular_accumulator), // 0x0F RRCA
-        dop!("STOP", &CPU::stop), // 0x10 STOP
-        dop!("LD DE,{:#06X}", u16, &|cpu: &mut CPU, value| {
+        dop!("RRCA", &Cpu::rotate_right_circular_accumulator), // 0x0F RRCA
+        dop!("STOP", &Cpu::stop), // 0x10 STOP
+        dop!("LD DE,{:#06X}", u16, &|cpu: &mut Cpu, value| {
             cpu.regs.set_de(value);
             3
         }), // 0x11 LD DE,d16
-        dop!("LD (DE),A", &|cpu: &mut CPU| {
+        dop!("LD (DE),A", &|cpu: &mut Cpu| {
             cpu.write(cpu.regs.get_de(), cpu.regs.a);
             2
         }), // 0x12 LD (DE),A
@@ -140,14 +140,14 @@ impl CPU {
         dop!("INC D", &alu_inc_byte!(d)), // 0x14 INC D
         dop!("DEC D", &alu_dec_byte!(d)), // 0x15 DEC D
         dop!("LD D,{:#04X}", u8, &load!(d)), // 0x16 LD D,d8
-        dop!("RLA", &CPU::rotate_left_accumulator), // 0x07 RLA
-        dop!("JR {:#02X}", i8, &CPU::relative_jump), // 0x18 JR r8
-        dop!("ADD HL,DE", &|cpu: &mut CPU| {
+        dop!("RLA", &Cpu::rotate_left_accumulator), // 0x07 RLA
+        dop!("JR {:#02X}", i8, &Cpu::relative_jump), // 0x18 JR r8
+        dop!("ADD HL,DE", &|cpu: &mut Cpu| {
             let v = cpu.regs.get_de();
             cpu.alu_add_to_hl(v);
             2
         }), // 0x19 ADD HL,DE
-        dop!("LD A,(DE)", &|cpu: &mut CPU| {
+        dop!("LD A,(DE)", &|cpu: &mut Cpu| {
             let a = cpu.regs.get_de();
             cpu.regs.a = cpu.read(a);
             2
@@ -156,118 +156,118 @@ impl CPU {
         dop!("INC E", &alu_inc_byte!(e)), // 0x1C INC E
         dop!("DEC E", &alu_dec_byte!(e)), // 0x1D DEC E
         dop!("LD E,{:#04X}", u8, &load!(e)), // 0x1E LD E,d8
-        dop!("RRA", &CPU::rotate_right_accumulator), // 0x1F RRA
-        dop!("JR NZ,{:#02X}", i8, &CPU::relative_jump_nz), // 0x20 JR NZ,r8
-        dop!("LD HL,{:#06X}", u16, &|cpu: &mut CPU, value| {
+        dop!("RRA", &Cpu::rotate_right_accumulator), // 0x1F RRA
+        dop!("JR NZ,{:#02X}", i8, &Cpu::relative_jump_nz), // 0x20 JR NZ,r8
+        dop!("LD HL,{:#06X}", u16, &|cpu: &mut Cpu, value| {
             cpu.regs.set_hl(value);
             3
         }), // 0x21 LD HL,d16
-        dop!("LD (HL+),A", &|cpu: &mut CPU| {
+        dop!("LD (HL+),A", &|cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             cpu.write(addr, cpu.regs.a);
-            cpu.regs.set_hl(addr + 1);
+            cpu.regs.set_hl(addr.wrapping_add(1));
             2
         }), // 0x22 LD (HL+),A
         dop!("INC HL", &alu_inc_word!(HL)), // 0x23 INC HL
         dop!("INC H", &alu_inc_byte!(h)), // 0x24 INC H
         dop!("DEC H", &alu_dec_byte!(h)), // 0x25 DEC H
         dop!("LD H,{:#04X}", u8, &load!(h)), // 0x26 LD H,d8
-        dop!("DAA", &CPU::daa), // 0x27 DAA
-        dop!("JR Z,{:#04X}", i8, &CPU::relative_jump_z), // 0x28 JR Z,r8
-        dop!("ADD HL,HL", &|cpu: &mut CPU| {
+        dop!("DAA", &Cpu::daa), // 0x27 DAA
+        dop!("JR Z,{:#04X}", i8, &Cpu::relative_jump_z), // 0x28 JR Z,r8
+        dop!("ADD HL,HL", &|cpu: &mut Cpu| {
             let v = cpu.regs.get_hl();
             cpu.alu_add_to_hl(v);
             2
         }), // 0x29 ADD HL,HL
-        dop!("LD A,(HL+)", &|cpu: &mut CPU| {
+        dop!("LD A,(HL+)", &|cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             cpu.regs.a = cpu.read(addr);
-            cpu.regs.set_hl(addr + 1);
+            cpu.regs.set_hl(addr.wrapping_add(1));
             2
         }), // 0x2A LD A,(HL+)
         dop!("DEC HL", &alu_dec_word!(HL)), // 0x2B DEC HL
         dop!("INC L", &alu_inc_byte!(l)), // 0x2C INC L
         dop!("DEC L", &alu_dec_byte!(l)), // 0x2D DEC L
         dop!("LD L,{:#04X}", u8, &load!(l)), // 0x2E LD L,d8
-        dop!("CPL", &CPU::alu_complement), // 0x2F CPL
-        dop!("JR NC,{:#04X}", i8, &CPU::relative_jump_nc), // 0x30 JR NC,r8
-        dop!("LD SP,{:#06X}", u16, &|cpu: &mut CPU, value| {
+        dop!("CPL", &Cpu::alu_complement), // 0x2F CPL
+        dop!("JR NC,{:#04X}", i8, &Cpu::relative_jump_nc), // 0x30 JR NC,r8
+        dop!("LD SP,{:#06X}", u16, &|cpu: &mut Cpu, value| {
             cpu.regs.sp = value;
             3
         }), // 0x31 LD SP,d16
-        dop!("LD (HL-),A", &|cpu: &mut CPU| {
+        dop!("LD (HL-),A", &|cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             cpu.write(addr, cpu.regs.a);
-            cpu.regs.set_hl(addr - 1);
+            cpu.regs.set_hl(addr.wrapping_sub(1));
             2
         }), // 0x32 LD (HL-),A
         dop!("INC SP", &alu_inc_word!(SP)), // 0x33 INC SP
-        dop!("INC (HL)", &|cpu: &mut CPU| {
+        dop!("INC (HL)", &|cpu: &mut Cpu| {
             let a = cpu.regs.get_hl();
             let mut v = cpu.read(a);
             cpu.alu_inc_byte(&mut v);
             cpu.write(a, v);
             3
         }), // 0x34 INC (HL)
-        dop!("DEC (HL)", &|cpu: &mut CPU| {
+        dop!("DEC (HL)", &|cpu: &mut Cpu| {
             let a = cpu.regs.get_hl();
             let mut v = cpu.read(a);
             cpu.alu_dec_byte(&mut v);
             cpu.write(a, v);
             3
         }), // 0x35 DEC (HL)
-        dop!("LD (HL),{:#04X}", u8, &|cpu: &mut CPU, value| {
+        dop!("LD (HL),{:#04X}", u8, &|cpu: &mut Cpu, value| {
             let a = cpu.regs.get_hl();
             cpu.write(a, value);
             3
         }), // 0x36 LD (HL),d8
-        dop!("SCF", &CPU::alu_set_carry_flag), // 0x37 SCF
-        dop!("JR C,{:#04X}", i8, &CPU::relative_jump_c), // 0x38 JR C,r8
-        dop!("ADD HL,SP", &|cpu: &mut CPU| {
+        dop!("SCF", &Cpu::alu_set_carry_flag), // 0x37 SCF
+        dop!("JR C,{:#04X}", i8, &Cpu::relative_jump_c), // 0x38 JR C,r8
+        dop!("ADD HL,SP", &|cpu: &mut Cpu| {
             let v = cpu.regs.sp;
             cpu.alu_add_to_hl(v);
             2
         }), // 0x39 ADD HL,SP
-        dop!("LD A,(HL-)", &|cpu: &mut CPU| {
+        dop!("LD A,(HL-)", &|cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             cpu.regs.a = cpu.read(addr);
-            cpu.regs.set_hl(addr - 1);
+            cpu.regs.set_hl(addr.wrapping_sub(1));
             2
         }), // 0x3A LD A,(HL-)
         dop!("DEC SP", &alu_dec_word!(SP)), // 0x3B DEC SP
         dop!("INC A", &alu_inc_byte!(a)), // 0x3C INC A
         dop!("DEC A", &alu_dec_byte!(a)), // 0x3D DEC A
         dop!("LD A,{:#04X}", u8, &load!(a)), // 0x3E LD A,d8
-        dop!("CCF", &CPU::alu_complement_carry_flag), // 0x3F CCF
-        dop!("LD B,B", &load!(b, b)), // 0x40 LD B,B
+        dop!("CCF", &Cpu::alu_complement_carry_flag), // 0x3F CCF
+        dop!("LD B,B", &Cpu::nop), // 0x40 LD B,B
         dop!("LD B,C", &load!(b, c)), // 0x41 LD B,C
         dop!("LD B,D", &load!(b, d)), // 0x42 LD B,D
         dop!("LD B,E", &load!(b, e)), // 0x43 LD B,E
         dop!("LD B,H", &load!(b, h)), // 0x44 LD B,H
         dop!("LD B,L", &load!(b, l)), // 0x45 LD B,L
-        dop!("LD B,(HL)", &|cpu: &mut CPU| {
+        dop!("LD B,(HL)", &|cpu: &mut Cpu| {
             cpu.regs.b = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x46 LD B,(HL)
         dop!("LD B,A", &load!(b, a)), // 0x47 LD B,A
         dop!("LD C,B", &load!(c, b)), // 0x48 LD C,B
-        dop!("LD C,C", &load!(c, c)), // 0x49 LD C,C
+        dop!("LD C,C", &Cpu::nop), // 0x49 LD C,C
         dop!("LD C,D", &load!(c, d)), // 0x4A LD C,D
         dop!("LD C,E", &load!(c, e)), // 0x4B LD C,E
         dop!("LD C,H", &load!(c, h)), // 0x4C LD C,H
         dop!("LD C,L", &load!(c, l)), // 0x4D LD C,L
-        dop!("LD C,(HL)", &|cpu: &mut CPU| {
+        dop!("LD C,(HL)", &|cpu: &mut Cpu| {
             cpu.regs.c = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x4E LD C,(HL)
         dop!("LD C,A", &load!(c, a)), // 0x4F LD C,A
         dop!("LD D,B", &load!(d, b)), // 0x50 LD B,B
         dop!("LD D,C", &load!(d, c)), // 0x51 LD B,C
-        dop!("LD D,D", &load!(d, d)), // 0x52 LD B,D
+        dop!("LD D,D", &Cpu::nop), // 0x52 LD B,D
         dop!("LD D,E", &load!(d, e)), // 0x53 LD B,E
         dop!("LD D,H", &load!(d, h)), // 0x54 LD B,H
         dop!("LD D,L", &load!(d, l)), // 0x55 LD B,L
-        dop!("LD D,(HL)", &|cpu: &mut CPU| {
+        dop!("LD D,(HL)", &|cpu: &mut Cpu| {
             cpu.regs.d = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x56 LD D,(HL)
@@ -275,10 +275,10 @@ impl CPU {
         dop!("LD E,B", &load!(e, b)), // 0x58 LD C,B
         dop!("LD E,C", &load!(e, c)), // 0x59 LD C,C
         dop!("LD E,D", &load!(e, d)), // 0x5A LD C,D
-        dop!("LD E,E", &load!(e, e)), // 0x5B LD C,E
+        dop!("LD E,E", &Cpu::nop), // 0x5B LD C,E
         dop!("LD E,H", &load!(e, h)), // 0x5C LD C,H
         dop!("LD E,L", &load!(e, l)), // 0x5D LD C,L
-        dop!("LD E,(HL)", &|cpu: &mut CPU| {
+        dop!("LD E,(HL)", &|cpu: &mut Cpu| {
             cpu.regs.e = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x5E LD E,(HL)
@@ -287,9 +287,9 @@ impl CPU {
         dop!("LD H,C", &load!(h, c)), // 0x61 LD H,C
         dop!("LD H,D", &load!(h, d)), // 0x62 LD H,D
         dop!("LD H,E", &load!(h, e)), // 0x63 LD H,E
-        dop!("LD H,H", &load!(h, h)), // 0x64 LD H,H
+        dop!("LD H,H", &Cpu::nop), // 0x64 LD H,H
         dop!("LD H,L", &load!(h, l)), // 0x65 LD H,L
-        dop!("LD H,(HL)", &|cpu: &mut CPU| {
+        dop!("LD H,(HL)", &|cpu: &mut Cpu| {
             cpu.regs.h = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x66 LD H,(HL)
@@ -299,38 +299,38 @@ impl CPU {
         dop!("LD L,D", &load!(l, d)), // 0x6A LD L,D
         dop!("LD L,E", &load!(l, e)), // 0x6B LD L,E
         dop!("LD L,H", &load!(l, h)), // 0x6C LD L,H
-        dop!("LD L,L", &load!(l, l)), // 0x6D LD L,L
-        dop!("LD L,(HL)", &|cpu: &mut CPU| {
+        dop!("LD L,L", &Cpu::nop), // 0x6D LD L,L
+        dop!("LD L,(HL)", &|cpu: &mut Cpu| {
             cpu.regs.l = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x6E LD L,(HL)
         dop!("LD L,A", &load!(l, a)), // 0x6F LD L,A
-        dop!("LD (HL),B", &|cpu: &mut CPU| {
+        dop!("LD (HL),B", &|cpu: &mut Cpu| {
             cpu.write(cpu.regs.get_hl(), cpu.regs.b);
             2
         }), // 0x70 LD (HL),B
-        dop!("LD (HL),C", &|cpu: &mut CPU| {
+        dop!("LD (HL),C", &|cpu: &mut Cpu| {
             cpu.write(cpu.regs.get_hl(), cpu.regs.c);
             2
         }), // 0x71 LD (HL),C
-        dop!("LD (HL),D", &|cpu: &mut CPU| {
+        dop!("LD (HL),D", &|cpu: &mut Cpu| {
             cpu.write(cpu.regs.get_hl(), cpu.regs.d);
             2
         }), // 0x72 LD (HL),D
-        dop!("LD (HL),E", &|cpu: &mut CPU| {
+        dop!("LD (HL),E", &|cpu: &mut Cpu| {
             cpu.write(cpu.regs.get_hl(), cpu.regs.e);
             2
         }), // 0x73 LD (HL),E
-        dop!("LD (HL),H", &|cpu: &mut CPU| {
+        dop!("LD (HL),H", &|cpu: &mut Cpu| {
             cpu.write(cpu.regs.get_hl(), cpu.regs.h);
             2
         }), // 0x74 LD (HL),H
-        dop!("LD (HL),L", &|cpu: &mut CPU| {
+        dop!("LD (HL),L", &|cpu: &mut Cpu| {
             cpu.write(cpu.regs.get_hl(), cpu.regs.l);
             2
         }), // 0x75 LD (HL),L
-        dop!("HALT", &CPU::halt), // 0x76 HALT
-        dop!("LD (HL),L", &|cpu: &mut CPU| {
+        dop!("HALT", &Cpu::halt), // 0x76 HALT
+        dop!("LD (HL),L", &|cpu: &mut Cpu| {
             cpu.write(cpu.regs.get_hl(), cpu.regs.a);
             2
         }), // 0x77 LD (HL),L
@@ -340,18 +340,18 @@ impl CPU {
         dop!("LD A,E", &load!(a, e)), // 0x7B LD A,E
         dop!("LD A,H", &load!(a, h)), // 0x7C LD A,H
         dop!("LD A,L", &load!(a, l)), // 0x7D LD A,L
-        dop!("LD A,(HL)", &|cpu: &mut CPU| {
+        dop!("LD A,(HL)", &|cpu: &mut Cpu| {
             cpu.regs.a = cpu.read(cpu.regs.get_hl());
             2
         }), // 0x7E LD A,(HL)
-        dop!("LD A,A", &load!(a, a)), // 0x7F LD A,A
+        dop!("LD A,A", &Cpu::nop), // 0x7F LD A,A
         dop!("ADD A,B", &alu_add!(a, b)), // 0x80 ADD A,B
         dop!("ADD A,C", &alu_add!(a, c)), // 0x81 ADD A,C
         dop!("ADD A,D", &alu_add!(a, d)), // 0x82 ADD A,D
         dop!("ADD A,E", &alu_add!(a, e)), // 0x83 ADD A,E
         dop!("ADD A,H", &alu_add!(a, h)), // 0x84 ADD A,H
         dop!("ADD A,L", &alu_add!(a, l)), // 0x85 ADD A,L
-        dop!("ADD A,(HL)", &|cpu: &mut CPU| {
+        dop!("ADD A,(HL)", &|cpu: &mut Cpu| {
             let a = cpu.regs.a;
             let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_add_byte(a, value);
@@ -364,7 +364,7 @@ impl CPU {
         dop!("ADC A,E", &alu_adc!(a, e)), // 0x8B ADC A,E
         dop!("ADC A,H", &alu_adc!(a, h)), // 0x8C ADC A,H
         dop!("ADC A,L", &alu_adc!(a, l)), // 0x8D ADC A,L
-        dop!("ADC A,(HL)", &|cpu: &mut CPU| {
+        dop!("ADC A,(HL)", &|cpu: &mut Cpu| {
             let a = cpu.regs.a;
             let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_add_byte_with_carry(a, value);
@@ -377,7 +377,7 @@ impl CPU {
         dop!("SUB A,E", &alu_sub!(a, e)),
         dop!("SUB A,H", &alu_sub!(a, h)),
         dop!("SUB A,L", &alu_sub!(a, l)),
-        dop!("SUB A,(HL)", &|cpu: &mut CPU| {
+        dop!("SUB A,(HL)", &|cpu: &mut Cpu| {
             let a = cpu.regs.a;
             let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_sub_byte(a, value);
@@ -390,7 +390,7 @@ impl CPU {
         dop!("SBC A,E", &alu_sbc!(a, e)),
         dop!("SBC A,H", &alu_sbc!(a, h)),
         dop!("SBC A,L", &alu_sbc!(a, l)),
-        dop!("SBC A,(HL)", &|cpu: &mut CPU| {
+        dop!("SBC A,(HL)", &|cpu: &mut Cpu| {
             let a = cpu.regs.a;
             let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_sub_byte_with_carry(a, value);
@@ -403,7 +403,7 @@ impl CPU {
         dop!("AND A,E", &alu_and!(a, e)),
         dop!("AND A,H", &alu_and!(a, h)),
         dop!("AND A,L", &alu_and!(a, l)),
-        dop!("AND A,(HL)", &|cpu: &mut CPU| {
+        dop!("AND A,(HL)", &|cpu: &mut Cpu| {
             let a = cpu.regs.a;
             let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_and(a, value);
@@ -416,7 +416,7 @@ impl CPU {
         dop!("XOR A,E", &alu_xor!(a, e)),
         dop!("XOR A,H", &alu_xor!(a, h)),
         dop!("XOR A,L", &alu_xor!(a, l)),
-        dop!("XOR A,(HL)", &|cpu: &mut CPU| {
+        dop!("XOR A,(HL)", &|cpu: &mut Cpu| {
             let a = cpu.regs.a;
             let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_xor(a, value);
@@ -429,7 +429,7 @@ impl CPU {
         dop!("OR A,E", &alu_or!(a, e)),
         dop!("OR A,H", &alu_or!(a, h)),
         dop!("OR A,L", &alu_or!(a, l)),
-        dop!("OR A,(HL)", &|cpu: &mut CPU| {
+        dop!("OR A,(HL)", &|cpu: &mut Cpu| {
             let a = cpu.regs.a;
             let value = cpu.read(cpu.regs.get_hl());
             cpu.regs.a = cpu.alu_or(a, value);
@@ -442,157 +442,157 @@ impl CPU {
         dop!("CP A,E", &alu_cp!(a, e)),
         dop!("CP A,H", &alu_cp!(a, h)),
         dop!("CP A,L", &alu_cp!(a, l)),
-        dop!("CP A,(HL)", &|cpu: &mut CPU| {
+        dop!("CP A,(HL)", &|cpu: &mut Cpu| {
             let a = cpu.regs.a;
             let value = cpu.read(cpu.regs.get_hl());
             cpu.alu_cp(a, value);
             2
         }),
         dop!("CP A,A", &alu_cp!(a, a)),
-        dop!("RET NZ", &CPU::stack_ret_nz),
-        dop!("POP BC", &|cpu: &mut CPU| {
+        dop!("RET NZ", &Cpu::stack_ret_nz),
+        dop!("POP BC", &|cpu: &mut Cpu| {
             let value = cpu.stack_pop();
             cpu.regs.set_bc(value);
             3
         }),
-        dop!("JP NZ,{:#06X}", u16, &CPU::jump_nz),
-        dop!("JP {:#06X}", u16, &CPU::jump),
-        dop!("CALL NZ,{:#06X}", u16, &CPU::stack_call_nz),
-        dop!("PUSH BC", &CPU::stack_push_bc),
-        dop!("ADD A,{:#04X}", u8, &|cpu: &mut CPU, value| {
+        dop!("JP NZ,{:#06X}", u16, &Cpu::jump_nz),
+        dop!("JP {:#06X}", u16, &Cpu::jump),
+        dop!("CALL NZ,{:#06X}", u16, &Cpu::stack_call_nz),
+        dop!("PUSH BC", &Cpu::stack_push_bc),
+        dop!("ADD A,{:#04X}", u8, &|cpu: &mut Cpu, value| {
             let a = cpu.regs.a;
             cpu.regs.a = cpu.alu_add_byte(a, value);
             2
         }),
         dop!("RST 00H", &stack_rst!(0x00)),
-        dop!("RET Z", &CPU::stack_ret_z),
-        dop!("RET", &CPU::stack_ret), // 0xC9 RET
-        dop!("JP Z,{:#06X}", u16, &CPU::jump_z),
-        dop!("PREFIX CB", &CPU::process_cb),
-        dop!("CALL Z,{:#06X}", u16, &CPU::stack_call_z),
-        dop!("CALL {:#06X}", u16, &CPU::stack_call),
-        dop!("ADC A,{:#04X}", u8, &|cpu: &mut CPU, value| {
+        dop!("RET Z", &Cpu::stack_ret_z),
+        dop!("RET", &Cpu::stack_ret), // 0xC9 RET
+        dop!("JP Z,{:#06X}", u16, &Cpu::jump_z),
+        dop!("PREFIX CB", &Cpu::process_cb),
+        dop!("CALL Z,{:#06X}", u16, &Cpu::stack_call_z),
+        dop!("CALL {:#06X}", u16, &Cpu::stack_call),
+        dop!("ADC A,{:#04X}", u8, &|cpu: &mut Cpu, value| {
             let a = cpu.regs.a;
             cpu.regs.a = cpu.alu_add_byte_with_carry(a, value);
             2
         }),
         dop!("RST 08H", &stack_rst!(0x08)),
-        dop!("RET NC", &CPU::stack_ret_nc),
-        dop!("POP DE", &|cpu: &mut CPU| {
+        dop!("RET NC", &Cpu::stack_ret_nc),
+        dop!("POP DE", &|cpu: &mut Cpu| {
             let value = cpu.stack_pop();
             cpu.regs.set_de(value);
             3
         }),
-        dop!("JP NC,{:#06X}", u16, &CPU::jump_nc),
-        dop!("0xD3 NOPE", &CPU::nonexistant),
-        dop!("CALL NC,{:#06X}", u16, &CPU::stack_call_nc),
-        dop!("PUSH DE", &CPU::stack_push_de),
-        dop!("SUB A,{:#04X}", u8, &|cpu: &mut CPU, value| {
+        dop!("JP NC,{:#06X}", u16, &Cpu::jump_nc),
+        dop!("0xD3 NOPE", &Cpu::nonexistent),
+        dop!("CALL NC,{:#06X}", u16, &Cpu::stack_call_nc),
+        dop!("PUSH DE", &Cpu::stack_push_de),
+        dop!("SUB A,{:#04X}", u8, &|cpu: &mut Cpu, value| {
             let a = cpu.regs.a;
             cpu.regs.a = cpu.alu_sub_byte(a, value);
             2
         }),
         dop!("RST 10H", &stack_rst!(0x10)),
-        dop!("RET C", &CPU::stack_ret_c),
-        dop!("RETI", &CPU::stack_reti),
-        dop!("JP C,{:#06X}", u16, &CPU::jump_c),
-        dop!("0xDB NOPE", &CPU::nonexistant),
-        dop!("CALL C,{:#06X}", u16, &CPU::stack_call_c),
-        dop!("0xDD NOPE", &CPU::nonexistant),
-        dop!("SBC A,{:#04X}", u8, &|cpu: &mut CPU, value| {
+        dop!("RET C", &Cpu::stack_ret_c),
+        dop!("RETI", &Cpu::stack_reti),
+        dop!("JP C,{:#06X}", u16, &Cpu::jump_c),
+        dop!("0xDB NOPE", &Cpu::nonexistent),
+        dop!("CALL C,{:#06X}", u16, &Cpu::stack_call_c),
+        dop!("0xDD NOPE", &Cpu::nonexistent),
+        dop!("SBC A,{:#04X}", u8, &|cpu: &mut Cpu, value| {
             let a = cpu.regs.a;
             cpu.regs.a = cpu.alu_sub_byte_with_carry(a, value);
             2
         }),
         dop!("RST 18H", &stack_rst!(0x18)),
-        dop!("LD ({:#04X}),A", u8, &|cpu: &mut CPU, addr| {
+        dop!("LD ({:#04X}),A", u8, &|cpu: &mut Cpu, addr| {
             let value = cpu.regs.a;
             cpu.write(addr as u16 + 0xFF00, value);
             3
         }),
-        dop!("POP HL", &|cpu: &mut CPU| {
+        dop!("POP HL", &|cpu: &mut Cpu| {
             let value = cpu.stack_pop();
             cpu.regs.set_hl(value);
             3
         }),
-        dop!("LD (C),A", &|cpu: &mut CPU| {
+        dop!("LD (C),A", &|cpu: &mut Cpu| {
             let addr = cpu.regs.c;
             let value = cpu.regs.a;
             cpu.write(addr as u16 + 0xFF00, value);
             2
         }),
-        dop!("0xE3 NOPE", &CPU::nonexistant),
-        dop!("0xE4 NOPE", &CPU::nonexistant),
-        dop!("PUSH HL", &CPU::stack_push_hl),
-        dop!("AND A,{:#04X}", u8, &|cpu: &mut CPU, value| {
+        dop!("0xE3 NOPE", &Cpu::nonexistent),
+        dop!("0xE4 NOPE", &Cpu::nonexistent),
+        dop!("PUSH HL", &Cpu::stack_push_hl),
+        dop!("AND A,{:#04X}", u8, &|cpu: &mut Cpu, value| {
             let a = cpu.regs.a;
             cpu.regs.a = cpu.alu_and(a, value);
             2
         }),
         dop!("RST 20H", &stack_rst!(0x20)),
-        dop!("ADD SP,{:#04X}", i8, &|cpu: &mut CPU, value| {
+        dop!("ADD SP,{:#04X}", i8, &|cpu: &mut Cpu, value| {
             cpu.regs.sp = cpu.alu_add_to_sp(value);
             4
         }),
-        dop!("JP HL", &|cpu: &mut CPU| {
+        dop!("JP HL", &|cpu: &mut Cpu| {
             cpu.regs.pc = cpu.regs.get_hl();
             1
         }),
-        dop!("LD ({:#06X}),A", u16, &|cpu: &mut CPU, addr| {
+        dop!("LD ({:#06X}),A", u16, &|cpu: &mut Cpu, addr| {
             cpu.write(addr, cpu.regs.a);
             4
         }),
-        dop!("0xEB NOPE", &CPU::nonexistant),
-        dop!("0xEC NOPE", &CPU::nonexistant),
-        dop!("0xED NOPE", &CPU::nonexistant),
-        dop!("XOR A,{:#04X}", u8, &|cpu: &mut CPU, value| {
+        dop!("0xEB NOPE", &Cpu::nonexistent),
+        dop!("0xEC NOPE", &Cpu::nonexistent),
+        dop!("0xED NOPE", &Cpu::nonexistent),
+        dop!("XOR A,{:#04X}", u8, &|cpu: &mut Cpu, value| {
             let a = cpu.regs.a;
             cpu.regs.a = cpu.alu_xor(a, value);
             2
         }),
         dop!("RST 28H", &stack_rst!(0x28)),
-        dop!("LD A,({:#04X})", u8, &|cpu: &mut CPU, addr| {
+        dop!("LD A,({:#04X})", u8, &|cpu: &mut Cpu, addr| {
             cpu.regs.a = cpu.read(addr as u16 + 0xFF00);
             3
         }),
-        dop!("POP AF", &|cpu: &mut CPU| {
+        dop!("POP AF", &|cpu: &mut Cpu| {
             let value = cpu.stack_pop();
             cpu.regs.set_af(value & 0xFFF0); // make sure impossible flags are not set
             3
         }),
-        dop!("LD A,(C)", &|cpu: &mut CPU| {
+        dop!("LD A,(C)", &|cpu: &mut Cpu| {
             let addr = cpu.regs.c;
             cpu.regs.a = cpu.read(addr as u16 + 0xFF00);
             2
         }),
-        dop!("DI", &CPU::disable_interupts),
-        dop!("0xF4 NOPE", &CPU::nonexistant),
-        dop!("PUSH AF", &CPU::stack_push_af),
-        dop!("OR {:#04X}", u8, &|cpu: &mut CPU, value| {
+        dop!("DI", &Cpu::disable_interrupts),
+        dop!("0xF4 NOPE", &Cpu::nonexistent),
+        dop!("PUSH AF", &Cpu::stack_push_af),
+        dop!("OR {:#04X}", u8, &|cpu: &mut Cpu, value| {
             let a = cpu.regs.a;
             cpu.regs.a = cpu.alu_or(a, value);
             2
         }),
         dop!("RST 30H", &stack_rst!(0x30)),
-        dop!("LD HL,SP+{:#04X}", i8, &|cpu: &mut CPU, value| {
+        dop!("LD HL,SP+{:#04X}", i8, &|cpu: &mut Cpu, value| {
             let r = cpu.alu_add_to_sp(value);
             cpu.regs.set_hl(r);
             3
         }),
-        dop!("LD SP,HL", &|cpu: &mut CPU| {
+        dop!("LD SP,HL", &|cpu: &mut Cpu| {
             let hl = cpu.regs.get_hl();
             cpu.internal_at(hl);
             cpu.regs.sp = hl;
             2
         }),
-        dop!("LD A,({:#06X})", u16, &|cpu: &mut CPU, addr| {
+        dop!("LD A,({:#06X})", u16, &|cpu: &mut Cpu, addr| {
             cpu.regs.a = cpu.read(addr);
             4
         }),
-        dop!("EI", &CPU::enable_interupts),
-        dop!("0xFC NOPE", &CPU::nonexistant),
-        dop!("0xFD NOPE", &CPU::nonexistant),
-        dop!("CP A,{:#04X}", u8, &|cpu: &mut CPU, value| {
+        dop!("EI", &Cpu::enable_interrupts),
+        dop!("0xFC NOPE", &Cpu::nonexistent),
+        dop!("0xFD NOPE", &Cpu::nonexistent),
+        dop!("CP A,{:#04X}", u8, &|cpu: &mut Cpu, value| {
             let a = cpu.regs.a;
             cpu.alu_cp(a, value);
             2
@@ -859,14 +859,14 @@ impl CPU {
         dop!("SET 7,A", &set!(7, a)),
     ];
 
-    pub fn new(cartridge: Cartridge, model: Model) -> CPU {
-        CPU {
+    pub fn new(cartridge: Cartridge, model: Model) -> Cpu {
+        Cpu {
             regs: match (model, cartridge.supports_cgb()) {
                 (Model::Dmg, _) => DEFAULT_DMG_REGISTERS,
                 (Model::Cgb, true) => DEFAULT_CGB_REGISTERS,
                 (Model::Cgb, false) => DEFAULT_CGB_COMPAT_REGISTERS,
             },
-            mmu: MMU::new(cartridge, model),
+            mmu: Mmu::new(cartridge, model),
             stopped: false,
             halted: false,
             halt_bug: false,
@@ -881,11 +881,11 @@ impl CPU {
         }
     }
 
-    pub fn mmu(&self) -> &MMU {
+    pub fn mmu(&self) -> &Mmu {
         &self.mmu
     }
 
-    pub fn mmu_mut(&mut self) -> &mut MMU {
+    pub fn mmu_mut(&mut self) -> &mut Mmu {
         &mut self.mmu
     }
 
@@ -1038,12 +1038,12 @@ impl CPU {
     }
 
     fn execute(&mut self, op_code: u8) -> usize {
-        let op = &CPU::OPS[op_code as usize];
+        let op = &Cpu::OPS[op_code as usize];
         if self.trace {
             println!(
                 "OP: {:#04X} {:20} {:>6} {:}",
                 op_code,
-                op.mneumonic,
+                op.mnemonic,
                 self.trace_operand(op),
                 self.regs.one_line_rep()
             );
@@ -1052,7 +1052,7 @@ impl CPU {
         debug_assert!(
             self.instruction_cycles <= ticks,
             "{} accesses memory too often",
-            op.mneumonic
+            op.mnemonic
         );
         while self.instruction_cycles < ticks {
             self.internal();
@@ -1062,12 +1062,12 @@ impl CPU {
 
     fn process_cb(&mut self) -> usize {
         let op_code = self.fetch_byte();
-        let op = &CPU::CB_OPS[op_code as usize];
+        let op = &Cpu::CB_OPS[op_code as usize];
         if self.trace {
             println!(
                 "CB OP: {:#04X} {:20} {:>6}",
                 op_code,
-                op.mneumonic,
+                op.mnemonic,
                 self.trace_operand(op)
             );
         }
@@ -1103,14 +1103,14 @@ impl CPU {
     }
 
     /// IME rises once the next instruction has been fetched.
-    fn enable_interupts(&mut self) -> usize {
+    fn enable_interrupts(&mut self) -> usize {
         if !self.regs.ime && !self.ime_toggle {
             self.ime_toggle = true;
         }
         1
     }
 
-    fn disable_interupts(&mut self) -> usize {
+    fn disable_interrupts(&mut self) -> usize {
         self.regs.ime = false;
         1
     }
@@ -1141,39 +1141,11 @@ impl CPU {
         2
     }
 
-    fn nonexistant(&mut self) -> usize {
+    fn nonexistent(&mut self) -> usize {
         self.locked = true;
         1
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn create_cpu_with_single_instruction(instruction: Vec<u8>) -> CPU {
-        let mut rom_data = vec![0x00; 0x10000];
-        rom_data[0x100..(0x100 + instruction.len())].copy_from_slice(&instruction);
-        CPU::new(Cartridge::new(rom_data, None), Model::Dmg)
-    }
-
-    #[test]
-    fn test_cpu_instr_nop() {
-        let mut cpu = create_cpu_with_single_instruction(vec![0x00]);
-        let mut old_regs = cpu.regs;
-        cpu.cycle();
-        old_regs.pc += 1;
-        assert_eq!(cpu.regs, old_regs);
-    }
-
-    #[test]
-    fn test_cpu_instr_ld() {
-        let mut cpu = create_cpu_with_single_instruction(vec![0x01, 0xde, 0xad]);
-        let mut old_regs = cpu.regs;
-        cpu.cycle();
-        old_regs.b = 0xad;
-        old_regs.c = 0xde;
-        old_regs.pc += 3;
-        assert_eq!(cpu.regs, old_regs);
-    }
-}
+mod tests;

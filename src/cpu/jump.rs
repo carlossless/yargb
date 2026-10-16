@@ -1,7 +1,7 @@
-use crate::cpu::CPU;
+use crate::cpu::Cpu;
 use crate::registers::Flag::{C, Z};
 
-impl CPU {
+impl Cpu {
     pub fn jump_nz(&mut self, addr: u16) -> usize {
         if !self.regs.get_flag(Z) {
             return self.jump(addr);

@@ -569,7 +569,7 @@ impl Ppu {
     /// The OAM scan reads an entry every 2 dots: on the CGB as each pair of
     /// dots starts, on the DMG as it ends.
     fn scan_oam_at(&mut self, dot: u32) {
-        if dot % 2 != 0 {
+        if !dot.is_multiple_of(2) {
             return;
         }
         let index = if self.renders_color() {
@@ -997,11 +997,9 @@ impl Ppu {
 
         let position = self.position_in_line;
         if position.wrapping_add(16) < 8 {
-            if position == 0u8.wrapping_sub(17) {
-                self.position_in_line = POSITION_START;
-            } else if position & 7 == self.scx & 7 {
-                self.position_in_line = 0u8.wrapping_sub(8);
-            } else if self.window_is_being_fetched && position & 7 == 6 && self.scx & 7 == 7 {
+            let fine_scroll_reached = position & 7 == self.scx & 7
+                || self.window_is_being_fetched && position & 7 == 6 && self.scx & 7 == 7;
+            if fine_scroll_reached {
                 self.position_in_line = 0u8.wrapping_sub(8);
             } else if position == 0u8.wrapping_sub(9) {
                 self.position_in_line = POSITION_START;
@@ -1649,5 +1647,305 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    fn dmg() -> Ppu {
+        let mut ppu = Ppu::new(false, false);
+        ppu.write_register(0xFF47, 0xE4);
+        ppu
+    }
+
+    fn run(ppu: &mut Ppu, dots: u32) -> u8 {
+        (0..dots).fold(0, |interrupts, _| interrupts | ppu.step())
+    }
+
+    fn run_to(ppu: &mut Ppu, ly: u8, dot: u32) {
+        while (ppu.ly, ppu.dot) != (ly, dot) {
+            ppu.step();
+        }
+    }
+
+    fn stat_mode(ppu: &Ppu) -> u8 {
+        ppu.read_register(0xFF41) & 3
+    }
+
+    /// The dots of a visible line at which STAT's mode changes.
+    fn mode_changes(ppu: &mut Ppu, ly: u8) -> Vec<(u8, u32)> {
+        run_to(ppu, ly - 1, LINE_DOTS - 1);
+        let mut changes = Vec::new();
+        let mut mode = stat_mode(ppu);
+        while ppu.ly != ly + 1 {
+            ppu.step();
+            if stat_mode(ppu) != mode {
+                mode = stat_mode(ppu);
+                changes.push((mode, ppu.dot));
+            }
+        }
+        changes
+    }
+
+    /// Fills tile 1 with colour `color` and points the whole background map at it.
+    fn solid_background(ppu: &mut Ppu, color: u8) {
+        for row in 0..8 {
+            ppu.vram[0x10 + row * 2] = if color & 1 != 0 { 0xFF } else { 0 };
+            ppu.vram[0x11 + row * 2] = if color & 2 != 0 { 0xFF } else { 0 };
+        }
+        ppu.vram[0x1800..0x1C00].fill(1);
+    }
+
+    fn render_frame(ppu: &mut Ppu) {
+        run(ppu, FRAME_DOTS);
+    }
+
+    fn pixel(ppu: &Ppu, x: usize, y: usize) -> u16 {
+        ppu.frame()[y * SCREEN_WIDTH + x]
+    }
+
+    #[test]
+    fn stat_follows_the_modes_of_a_line() {
+        let mut ppu = dmg();
+        assert_eq!(mode_changes(&mut ppu, 10), [(2, 1), (3, 81), (0, 253)]);
+    }
+
+    #[test]
+    fn fine_scrolling_lengthens_mode_3() {
+        for scx in 0..8 {
+            let mut ppu = dmg();
+            ppu.write_register(0xFF43, scx);
+            let changes = mode_changes(&mut ppu, 10);
+            assert_eq!(changes[2], (0, 253 + scx as u32), "SCX {scx}");
+        }
+    }
+
+    #[test]
+    fn a_frame_is_154_lines_of_456_dots_with_one_vblank() {
+        let mut ppu = dmg();
+        run_to(&mut ppu, 0, 0);
+        let mut vblanks = 0;
+        for _ in 0..FRAME_DOTS {
+            if ppu.step() & VBLANK_INTERRUPT != 0 {
+                vblanks += 1;
+                assert_eq!(ppu.ly, SCREEN_HEIGHT as u8);
+            }
+        }
+        assert_eq!((ppu.ly, ppu.dot, vblanks), (0, 0, 1));
+    }
+
+    #[test]
+    fn hblank_interrupts_fire_once_per_visible_line() {
+        let mut ppu = dmg();
+        ppu.write_register(0xFF41, STAT_HBLANK);
+        run_to(&mut ppu, 0, 0);
+        let mut interrupts = 0;
+        for _ in 0..FRAME_DOTS {
+            if ppu.step() & STAT_INTERRUPT != 0 {
+                interrupts += 1;
+            }
+        }
+        assert_eq!(interrupts, SCREEN_HEIGHT);
+    }
+
+    #[test]
+    fn lyc_sets_the_coincidence_flag_and_interrupts() {
+        let mut ppu = dmg();
+        ppu.write_register(0xFF45, 42);
+        ppu.write_register(0xFF41, STAT_LYC);
+        run_to(&mut ppu, 41, 100);
+        assert_eq!(ppu.read_register(0xFF41) & 0x04, 0);
+        let interrupts = run(&mut ppu, LINE_DOTS);
+        assert_ne!(interrupts & STAT_INTERRUPT, 0);
+        assert_eq!(ppu.read_register(0xFF41) & 0x04, 0x04);
+    }
+
+    #[test]
+    fn turning_the_lcd_off_blanks_the_screen_and_resets_ly() {
+        let mut ppu = dmg();
+        run_to(&mut ppu, 50, 10);
+        ppu.write_register(0xFF40, 0x11);
+        assert_eq!((ppu.read_register(0xFF44), stat_mode(&ppu)), (0, 0));
+        assert_eq!(run(&mut ppu, 1000), 0);
+        assert!(ppu.frame().iter().all(|&pixel| pixel == 0));
+    }
+
+    #[test]
+    fn the_background_goes_through_bgp() {
+        let mut ppu = dmg();
+        solid_background(&mut ppu, 1);
+        ppu.write_register(0xFF47, 0b11_10_00_01);
+        render_frame(&mut ppu);
+        render_frame(&mut ppu);
+        assert_eq!(pixel(&ppu, 0, 0), 0);
+        ppu.write_register(0xFF47, 0b11_10_11_01);
+        render_frame(&mut ppu);
+        assert_eq!(pixel(&ppu, 159, 143), 3);
+    }
+
+    #[test]
+    fn clearing_lcdc_bit_0_blanks_the_dmg_background() {
+        let mut ppu = dmg();
+        solid_background(&mut ppu, 3);
+        ppu.write_register(0xFF40, 0x90);
+        render_frame(&mut ppu);
+        render_frame(&mut ppu);
+        assert_eq!(pixel(&ppu, 80, 72), 0);
+    }
+
+    #[test]
+    fn the_window_starts_at_wx_minus_7_from_wy() {
+        let mut ppu = dmg();
+        solid_background(&mut ppu, 0);
+        for row in 0..8 {
+            ppu.vram[0x20 + row * 2] = 0xFF;
+            ppu.vram[0x21 + row * 2] = 0xFF;
+        }
+        ppu.vram[0x1C00..0x2000].fill(2);
+        ppu.write_register(0xFF4A, 40);
+        ppu.write_register(0xFF4B, 87);
+        ppu.write_register(0xFF40, 0xF1);
+        render_frame(&mut ppu);
+        render_frame(&mut ppu);
+        assert_eq!((pixel(&ppu, 79, 40), pixel(&ppu, 80, 40)), (0, 3));
+        assert_eq!(pixel(&ppu, 80, 39), 0);
+    }
+
+    #[test]
+    fn objects_draw_over_the_background_unless_behind_it() {
+        let mut ppu = dmg();
+        solid_background(&mut ppu, 0);
+        for row in 0..8 {
+            ppu.vram[0x20 + row * 2] = 0xFF;
+        }
+        ppu.oam[..8].copy_from_slice(&[16 + 10, 8 + 20, 2, 0x00, 16 + 30, 8 + 20, 2, 0x80]);
+        ppu.write_register(0xFF48, 0b11_10_11_00);
+        ppu.write_register(0xFF40, 0x93);
+        render_frame(&mut ppu);
+        render_frame(&mut ppu);
+        assert_eq!(pixel(&ppu, 20, 10), 3);
+        assert_eq!(pixel(&ppu, 20, 30), 3, "behind colour 0 of the background");
+        solid_background(&mut ppu, 1);
+        render_frame(&mut ppu);
+        assert_eq!(
+            pixel(&ppu, 20, 30),
+            1,
+            "hidden by a non-zero background colour"
+        );
+    }
+
+    #[test]
+    fn at_most_ten_objects_are_drawn_per_line() {
+        let mut ppu = dmg();
+        solid_background(&mut ppu, 0);
+        for row in 0..8 {
+            ppu.vram[0x20 + row * 2] = 0xFF;
+        }
+        for index in 0..12 {
+            ppu.oam[index * 4..index * 4 + 4].copy_from_slice(&[16, 8 + index as u8 * 8, 2, 0]);
+        }
+        ppu.write_register(0xFF48, 0xE4);
+        ppu.write_register(0xFF40, 0x93);
+        render_frame(&mut ppu);
+        render_frame(&mut ppu);
+        assert_eq!(pixel(&ppu, 9 * 8, 0), 1);
+        assert_eq!(pixel(&ppu, 10 * 8, 0), 0);
+    }
+
+    #[test]
+    fn lcdc_transition_switches_some_bits_early() {
+        let mut ppu = dmg();
+        ppu.position_in_line = 20;
+        assert_eq!(
+            ppu.dmg_lcdc_transition(0x91, 0xC5),
+            0xC5 & !0x20 | 0x01 & 0x91
+        );
+        assert_eq!(
+            ppu.dmg_lcdc_transition(0xB1, 0x91),
+            0x91,
+            "window off is early"
+        );
+        assert_eq!(
+            ppu.dmg_lcdc_transition(0x91, 0xB1),
+            0x91,
+            "window on is late"
+        );
+        assert_eq!(
+            ppu.dmg_lcdc_transition(0x91, 0x90),
+            0x91,
+            "background off is late"
+        );
+        assert_eq!(
+            ppu.dmg_lcdc_transition(0x93, 0x91),
+            0x93,
+            "objects off is late"
+        );
+        ppu.position_in_line = 0;
+        assert_eq!(
+            ppu.dmg_lcdc_transition(0x93, 0x90),
+            0x90,
+            "early at the line start"
+        );
+    }
+
+    #[test]
+    fn oam_writes_during_the_scan_corrupt_the_row_being_read() {
+        let mut ppu = dmg();
+        for (index, byte) in ppu.oam.iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+        run_to(&mut ppu, 5, 20);
+        let row = ppu.oam_bug_row(0).unwrap();
+        let before = ppu.oam;
+        ppu.oam_bug_write(0);
+        let (a, b, c) = (
+            u16::from_le_bytes([before[row], before[row + 1]]),
+            u16::from_le_bytes([before[row - 8], before[row - 7]]),
+            u16::from_le_bytes([before[row - 4], before[row - 3]]),
+        );
+        assert_eq!(
+            ppu.oam[row..row + 2],
+            (((a ^ c) & (b ^ c)) ^ c).to_le_bytes()
+        );
+        assert_eq!(ppu.oam[row + 2..row + 8], before[row - 6..row]);
+        assert_eq!(ppu.oam[..row], before[..row]);
+    }
+
+    #[test]
+    fn oam_is_safe_outside_the_scan_and_on_the_cgb() {
+        let mut ppu = dmg();
+        run_to(&mut ppu, 5, 200);
+        assert_eq!(ppu.oam_bug_row(0), None);
+        let mut cgb = Ppu::new(true, false);
+        run_to(&mut cgb, 5, 20);
+        assert_eq!(cgb.oam_bug_row(0), None);
+    }
+
+    #[test]
+    fn the_boot_screen_holds_the_scaled_logo_and_registered_mark() {
+        let mut ppu = dmg();
+        let mut logo = [0; 48];
+        logo[0] = 0xF0;
+        ppu.load_dmg_boot_screen(&logo);
+        assert_eq!(ppu.vram[0x10..0x18], [0xFF, 0, 0xFF, 0, 0, 0, 0, 0]);
+        assert_eq!(ppu.vram[0x190], 0x3C);
+        assert_eq!(ppu.vram[0x1904..0x1910], (1..=12).collect::<Vec<u8>>()[..]);
+        assert_eq!(ppu.vram[0x1924..0x1930], (13..=24).collect::<Vec<u8>>()[..]);
+        assert_eq!(ppu.vram[0x1910], 0x19);
+    }
+
+    #[test]
+    fn interrupt_estimates_are_never_late() {
+        let mut ppu = dmg();
+        ppu.write_register(0xFF41, STAT_HBLANK | STAT_OAM | STAT_VBLANK);
+        for _ in 0..2000 {
+            let estimate = ppu.t_cycles_until_interrupt(VBLANK_INTERRUPT | STAT_INTERRUPT);
+            let mut dots = 0;
+            while ppu.step() == 0 {
+                dots += 1;
+            }
+            assert!(
+                dots + 1 >= estimate,
+                "estimated {estimate}, came after {}",
+                dots + 1
+            );
+        }
     }
 }

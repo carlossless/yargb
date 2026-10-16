@@ -1,13 +1,13 @@
-use crate::cpu::CPU;
+use crate::cpu::Cpu;
 use crate::registers::Flag::{C, Z};
 
 macro_rules! stack_rst {
     ($addr:expr) => {
-        |cpu: &mut CPU| cpu.stack_rst($addr)
+        |cpu: &mut Cpu| cpu.stack_rst($addr)
     };
 }
 
-impl CPU {
+impl Cpu {
     fn stack_ret_if(&mut self, condition: bool) -> usize {
         self.internal();
         if condition {
@@ -35,13 +35,13 @@ impl CPU {
 
     pub fn stack_ret(&mut self) -> usize {
         self.regs.pc = self.stack_pop();
-        return 4;
+        4
     }
 
     pub fn stack_reti(&mut self) -> usize {
         self.regs.pc = self.stack_pop();
         self.regs.ime = true;
-        return 4;
+        4
     }
 
     pub fn stack_rst(&mut self, addr: u16) -> usize {

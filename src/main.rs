@@ -8,6 +8,8 @@ mod frontend;
 mod mmu;
 mod ppu;
 mod registers;
+#[cfg(test)]
+mod test_roms;
 mod timer;
 
 use std::path::PathBuf;
@@ -102,12 +104,13 @@ fn run(options: Options) -> Result<(), String> {
         .model
         .unwrap_or_else(|| Model::for_cartridge(&cartridge));
     let mut emulator = Emulator::new(cartridge, model, !options.interpreter, options.trace);
-    emulator.set_serial_output(options.serial);
+    emulator.record_serial(options.serial);
 
     if options.headless {
         for _ in 0..options.frames.unwrap_or(0) {
             emulator.run_frame();
             emulator.take_samples();
+            frontend::print_serial(&mut emulator);
         }
     } else {
         frontend::run_window(&mut emulator, options.scale, options.frames)?;

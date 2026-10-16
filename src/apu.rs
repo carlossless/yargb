@@ -158,7 +158,7 @@ impl Wave {
     /// Retriggering the DMG wave channel just as it fetches overwrites the
     /// start of wave RAM with the bytes it was about to read.
     fn corrupt_on_retrigger(&mut self) {
-        let offset = (self.position as usize + 1) / 2 % 16;
+        let offset = (self.position as usize).div_ceil(2) % 16;
         if offset < 4 {
             self.ram[0] = self.ram[offset];
         } else {
@@ -180,7 +180,7 @@ impl Wave {
     fn output(&self) -> Option<u8> {
         self.dac_on.then(|| {
             let byte = self.ram[self.position as usize / 2];
-            let sample = if self.position % 2 == 0 {
+            let sample = if self.position.is_multiple_of(2) {
                 byte >> 4
             } else {
                 byte & 0x0F
@@ -306,7 +306,7 @@ impl Apu {
     }
 
     fn length_steps_next(&self) -> bool {
-        self.frame_step % 2 == 0
+        self.frame_step.is_multiple_of(2)
     }
 
     pub fn step_frame_sequencer(&mut self) {
@@ -315,7 +315,7 @@ impl Apu {
         }
         let step = self.frame_step;
         self.frame_step = (step + 1) % 8;
-        if step % 2 == 0 {
+        if step.is_multiple_of(2) {
             for (length, enabled) in [
                 (&mut self.square1.length, &mut self.square1.enabled),
                 (&mut self.square2.length, &mut self.square2.enabled),
@@ -654,4 +654,152 @@ fn write_length_control(
         length.counter = if extra_clock { max - 1 } else { max };
     }
     triggered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NR52: u16 = 0xFF26;
+
+    fn channels_on(apu: &Apu) -> u8 {
+        apu.read(NR52) & 0x0F
+    }
+
+    /// Starts the wave channel at its slowest rate with distinct bytes in wave RAM.
+    fn playing_wave(cgb: bool) -> Apu {
+        let mut apu = Apu::new(cgb);
+        for (index, addr) in (0xFF30..=0xFF3F).enumerate() {
+            apu.write(addr, index as u8 * 0x11);
+        }
+        apu.write(0xFF1A, 0x80);
+        apu.write(0xFF1D, 0x00);
+        apu.write(0xFF1E, 0x80);
+        apu
+    }
+
+    #[test]
+    fn unused_register_bits_read_as_set() {
+        let mut apu = Apu::new(false);
+        apu.write(0xFF10, 0);
+        apu.write(0xFF1A, 0);
+        assert_eq!(apu.read(0xFF10), 0x80);
+        assert_eq!(apu.read(0xFF1A), 0x7F);
+        assert_eq!(apu.read(0xFF13), 0xFF);
+        assert_eq!(apu.read(0xFF27), 0xFF);
+    }
+
+    #[test]
+    fn powering_off_clears_registers_and_channels() {
+        let mut apu = Apu::new(false);
+        assert_eq!(channels_on(&apu), 0b0001);
+        apu.write(NR52, 0);
+        assert_eq!(apu.read(NR52), 0x70);
+        assert_eq!(apu.read(0xFF12), 0x00);
+        apu.write(0xFF12, 0xF0);
+        assert_eq!(apu.read(0xFF12), 0x00, "writes are ignored while off");
+        apu.write(NR52, 0x80);
+        assert_eq!(apu.read(NR52), 0xF0);
+    }
+
+    #[test]
+    fn the_dmg_keeps_length_writes_while_powered_off() {
+        let mut dmg = Apu::new(false);
+        dmg.write(NR52, 0);
+        dmg.write(0xFF11, 0x3F);
+        dmg.write(NR52, 0x80);
+        dmg.write(0xFF12, 0xF0);
+        dmg.write(0xFF14, 0xC0);
+        assert_eq!(channels_on(&dmg), 0b0001);
+        dmg.step_frame_sequencer();
+        assert_eq!(channels_on(&dmg), 0, "length 1 expires on the first clock");
+    }
+
+    #[test]
+    fn triggering_needs_the_dac_on() {
+        let mut apu = Apu::new(false);
+        apu.write(0xFF17, 0x00);
+        apu.write(0xFF19, 0x80);
+        assert_eq!(channels_on(&apu) & 0b0010, 0);
+        apu.write(0xFF17, 0xF0);
+        apu.write(0xFF19, 0x80);
+        assert_eq!(channels_on(&apu) & 0b0010, 0b0010);
+        apu.write(0xFF17, 0x00);
+        assert_eq!(
+            channels_on(&apu) & 0b0010,
+            0,
+            "turning the DAC off stops the channel"
+        );
+    }
+
+    #[test]
+    fn length_counters_stop_their_channels() {
+        let mut apu = Apu::new(false);
+        apu.write(0xFF21, 0xF0);
+        apu.write(0xFF20, 64 - 3);
+        apu.write(0xFF23, 0xC0);
+        assert_eq!(channels_on(&apu) & 0b1000, 0b1000);
+        for _ in 0..6 {
+            apu.step_frame_sequencer();
+        }
+        assert_eq!(channels_on(&apu) & 0b1000, 0);
+    }
+
+    #[test]
+    fn sweep_overflow_on_trigger_disables_square_1() {
+        let mut apu = Apu::new(false);
+        apu.write(0xFF10, 0x11);
+        apu.write(0xFF12, 0xF0);
+        apu.write(0xFF13, 0xFF);
+        apu.write(0xFF14, 0x87);
+        assert_eq!(channels_on(&apu) & 0b0001, 0);
+    }
+
+    #[test]
+    fn samples_come_out_at_the_output_rate() {
+        let mut apu = Apu::new(false);
+        apu.tick(CLOCK_RATE as usize);
+        let frames = apu.take_samples().len() / 2;
+        assert!((SAMPLE_RATE as usize - 1..=SAMPLE_RATE as usize).contains(&frames));
+    }
+
+    #[test]
+    fn the_dmg_reads_wave_ram_while_playing_only_on_a_fetch() {
+        let mut apu = playing_wave(false);
+        assert_eq!(apu.read(0xFF30), 0xFF);
+        apu.tick((2048 * 2 + WAVE_TRIGGER_DELAY) as usize);
+        assert_eq!(
+            apu.read(0xFF35),
+            0x00,
+            "the byte being played, whatever the address"
+        );
+        apu.tick(WAVE_ACCESS_WINDOW as usize);
+        assert_eq!(apu.read(0xFF35), 0xFF);
+    }
+
+    #[test]
+    fn the_cgb_reads_the_playing_wave_byte() {
+        let mut apu = playing_wave(true);
+        apu.tick((2048 * 2 * 3 + WAVE_TRIGGER_DELAY) as usize);
+        assert_eq!(apu.read(0xFF3F), 0x11);
+    }
+
+    #[test]
+    fn wave_ram_is_plain_memory_while_stopped() {
+        let mut apu = Apu::new(false);
+        apu.write(0xFF35, 0x5A);
+        assert_eq!(apu.read(0xFF35), 0x5A);
+    }
+
+    #[test]
+    fn retriggering_the_dmg_wave_channel_as_it_fetches_corrupts_wave_ram() {
+        let mut apu = playing_wave(false);
+        let fetch = 2048 * 2;
+        apu.tick((fetch * 8 + WAVE_TRIGGER_DELAY) as usize - 1);
+        apu.write(0xFF1E, 0x80);
+        apu.write(0xFF1A, 0x00);
+        let ram: Vec<u8> = (0xFF30..=0xFF3F).map(|addr| apu.read(addr)).collect();
+        assert_eq!(ram[..4], [0x44, 0x55, 0x66, 0x77]);
+        assert_eq!(ram[4..], (4..16).map(|i| i * 0x11).collect::<Vec<u8>>()[..]);
+    }
 }

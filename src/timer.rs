@@ -147,3 +147,95 @@ impl Timer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn timer(tac: u8, tima: u8) -> Timer {
+        let mut timer = Timer::new(0);
+        timer.write_byte(0xFF07, tac);
+        timer.write_byte(0xFF05, tima);
+        timer
+    }
+
+    #[test]
+    fn div_is_the_high_byte_of_the_counter() {
+        let mut timer = Timer::new(0);
+        timer.tick(255);
+        assert_eq!(timer.read_byte(0xFF04), 0);
+        timer.tick(1);
+        assert_eq!(timer.read_byte(0xFF04), 1);
+        timer.write_byte(0xFF04, 0x55);
+        assert_eq!((timer.read_byte(0xFF04), timer.counter()), (0, 0));
+    }
+
+    #[test]
+    fn tima_counts_at_the_selected_rate() {
+        for (tac, period) in [(0x04, 1024), (0x05, 16), (0x06, 64), (0x07, 256)] {
+            let mut timer = timer(tac, 0);
+            timer.tick(period - 1);
+            assert_eq!(timer.read_byte(0xFF05), 0, "TAC {tac:02X}");
+            timer.tick(1);
+            assert_eq!(timer.read_byte(0xFF05), 1, "TAC {tac:02X}");
+        }
+    }
+
+    #[test]
+    fn a_stopped_timer_does_not_count() {
+        let mut timer = timer(0x01, 0);
+        timer.tick(1000);
+        assert_eq!(timer.read_byte(0xFF05), 0);
+        assert_eq!(timer.read_byte(0xFF07), 0xF9);
+    }
+
+    #[test]
+    fn overflow_reloads_from_tma_a_cycle_later_and_interrupts() {
+        let mut timer = timer(0x05, 0xFF);
+        timer.write_byte(0xFF06, 0xAB);
+        assert!(!timer.tick(16));
+        assert_eq!(timer.read_byte(0xFF05), 0x00);
+        assert!(timer.tick(4));
+        assert_eq!(timer.read_byte(0xFF05), 0xAB);
+    }
+
+    #[test]
+    fn writing_tima_during_the_overflow_cycle_cancels_the_reload() {
+        let mut timer = timer(0x05, 0xFF);
+        timer.write_byte(0xFF06, 0xAB);
+        timer.tick(16);
+        timer.write_byte(0xFF05, 0x12);
+        assert!(!timer.tick(4));
+        assert_eq!(timer.read_byte(0xFF05), 0x12);
+    }
+
+    #[test]
+    fn resetting_div_on_a_high_counter_bit_increments_tima() {
+        let mut timer = timer(0x05, 0);
+        timer.tick(8);
+        timer.write_byte(0xFF04, 0);
+        assert_eq!(timer.read_byte(0xFF05), 1);
+    }
+
+    #[test]
+    fn disabling_the_timer_on_a_high_counter_bit_increments_tima() {
+        let mut timer = timer(0x05, 0);
+        timer.tick(8);
+        timer.write_byte(0xFF07, 0x01);
+        assert_eq!(timer.read_byte(0xFF05), 1);
+    }
+
+    #[test]
+    fn overflow_estimate_is_never_late() {
+        let mut timer = timer(0x05, 0xF0);
+        let estimate = timer.m_cycles_until_overflow();
+        let mut cycles = 0;
+        while !timer.tick(4) {
+            cycles += 1;
+        }
+        assert!(
+            cycles >= estimate,
+            "overflowed after {cycles}, estimated {estimate}"
+        );
+    }
+}

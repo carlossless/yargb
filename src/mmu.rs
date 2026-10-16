@@ -54,7 +54,7 @@ impl Model {
     }
 }
 
-/// Joypad buttons as bits of the state passed to `MMU::set_buttons`.
+/// Joypad buttons as bits of the state passed to `Mmu::set_buttons`.
 pub mod buttons {
     pub const RIGHT: u8 = 1 << 0;
     pub const LEFT: u8 = 1 << 1;
@@ -80,7 +80,7 @@ struct VramDma {
     on_hblank: bool,
 }
 
-pub struct MMU {
+pub struct Mmu {
     cgb: bool,
     compat: bool,
     cartridge: Cartridge,
@@ -92,14 +92,14 @@ pub struct MMU {
     pub(crate) work_ram_bank_offset: u32,
     pub(crate) high_ram: [u8; 0x7F],
     timer: Timer,
-    interupt_flags: u8,
-    interupt_enable: u8,
+    interrupt_flags: u8,
+    interrupt_enable: u8,
     joypad_select: u8,
     buttons: u8,
     serial_data: u8,
     serial_control: u8,
     serial_bits: u8,
-    serial_output: bool,
+    serial_log: Option<Vec<u8>>,
     dma_source: u8,
     dma: Option<Dma>,
     dma_requested: Option<(u16, bool)>,
@@ -121,14 +121,14 @@ pub struct MMU {
     dirty_code: Vec<u16>,
 }
 
-impl MMU {
+impl Mmu {
     /// A CGB runs cartridges that don't support it in a DMG compatibility mode,
     /// with its own registers locked and colours from the boot ROM's palettes.
-    pub fn new(cartridge: Cartridge, model: Model) -> MMU {
+    pub fn new(cartridge: Cartridge, model: Model) -> Mmu {
         let cgb_hardware = model == Model::Cgb;
         let cgb = cgb_hardware && cartridge.supports_cgb();
         let compat = cgb_hardware && !cgb;
-        let mut mmu = MMU {
+        let mut mmu = Mmu {
             cgb,
             compat,
             cartridge,
@@ -138,14 +138,14 @@ impl MMU {
             work_ram_bank_offset: 0,
             high_ram: [0; 0x7F],
             timer: Timer::new(if cgb_hardware { 0x2674 } else { 0xABC8 }),
-            interupt_flags: 0x01,
-            interupt_enable: 0x00,
+            interrupt_flags: 0x01,
+            interrupt_enable: 0x00,
             joypad_select: if cgb_hardware { 0x30 } else { 0x00 },
             buttons: 0,
             serial_data: 0,
             serial_control: 0,
             serial_bits: 0,
-            serial_output: false,
+            serial_log: None,
             dma_source: 0xFF,
             dma: None,
             dma_requested: None,
@@ -171,10 +171,6 @@ impl MMU {
         mmu
     }
 
-    pub fn has_oam_bug(&self) -> bool {
-        !self.cgb
-    }
-
     pub fn is_cgb(&self) -> bool {
         self.cgb
     }
@@ -187,13 +183,21 @@ impl MMU {
         &self.cartridge
     }
 
-    pub fn set_serial_output(&mut self, enabled: bool) {
-        self.serial_output = enabled;
+    /// Starts or stops recording the bytes sent over the link cable.
+    pub fn record_serial(&mut self, enabled: bool) {
+        self.serial_log = enabled.then(Vec::new);
+    }
+
+    pub fn take_serial(&mut self) -> Vec<u8> {
+        self.serial_log
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
 
     pub fn set_buttons(&mut self, pressed: u8) {
         if pressed & !self.buttons != 0 {
-            self.interupt_flags |= JOYPAD_INTERRUPT;
+            self.interrupt_flags |= JOYPAD_INTERRUPT;
         }
         self.buttons = pressed;
     }
@@ -249,12 +253,12 @@ impl MMU {
             0xFF01 => self.serial_data,
             0xFF02 => self.serial_control | if self.cgb { 0x7C } else { 0x7E },
             0xFF04..=0xFF07 => self.timer.read_byte(addr),
-            0xFF0F => self.interupt_flags | 0xE0,
+            0xFF0F => self.interrupt_flags | 0xE0,
             0xFF10..=0xFF3F => self.apu.read(addr),
             0xFF46 => self.dma_source,
             0xFF40..=0xFF4B => self.ppu.read_register(addr),
             0xFF80..=0xFFFE => self.high_ram[addr as usize - 0xFF80],
-            0xFFFF => self.interupt_enable,
+            0xFFFF => self.interrupt_enable,
             _ if self.cgb => self.read_cgb_register(addr),
             _ if self.compat => self.read_compat_register(addr),
             _ => 0xFF,
@@ -335,8 +339,8 @@ impl MMU {
             0xFF02 => {
                 self.serial_control = value & if self.cgb { 0x83 } else { 0x81 };
                 if value & 0x81 == 0x81 {
-                    if self.serial_output {
-                        eprint!("{}", self.serial_data as char);
+                    if let Some(log) = &mut self.serial_log {
+                        log.push(self.serial_data);
                     }
                     self.serial_bits = 8;
                 }
@@ -344,7 +348,7 @@ impl MMU {
             0xFF04..=0xFF06 if self.cycle_t > 0 => self.deferred_timer_write = Some((addr, value)),
             0xFF04 => self.reset_div(),
             0xFF05..=0xFF07 => self.timer.write_byte(addr, value),
-            0xFF0F => self.interupt_flags = value & 0x1F,
+            0xFF0F => self.interrupt_flags = value & 0x1F,
             0xFF10..=0xFF3F => self.apu.write(addr, value),
             0xFF46 => {
                 self.dma_source = value;
@@ -356,9 +360,9 @@ impl MMU {
                 };
                 self.dma_requested = Some((source, false));
             }
-            0xFF40..=0xFF4B => self.interupt_flags |= self.ppu.write_register(addr, value),
+            0xFF40..=0xFF4B => self.interrupt_flags |= self.ppu.write_register(addr, value),
             0xFF80..=0xFFFE => self.high_ram[addr as usize - 0xFF80] = value,
-            0xFFFF => self.interupt_enable = value,
+            0xFFFF => self.interrupt_enable = value,
             _ if self.cgb => self.write_cgb_register(addr, value),
             _ if self.compat => self.write_compat_register(addr, value),
             _ => {}
@@ -481,7 +485,7 @@ impl MMU {
     }
 
     #[cfg(test)]
-    pub fn same_state(&self, other: &MMU) -> bool {
+    pub fn same_state(&self, other: &Mmu) -> bool {
         self.cartridge == other.cartridge
             && self.ppu == other.ppu
             && self.apu == other.apu
@@ -504,13 +508,13 @@ impl MMU {
             && (self.infrared, self.undocumented, self.stall_cycles)
                 == (other.infrared, other.undocumented, other.stall_cycles)
             && (
-                self.interupt_flags,
-                self.interupt_enable,
+                self.interrupt_flags,
+                self.interrupt_enable,
                 self.joypad_select,
                 self.buttons,
             ) == (
-                other.interupt_flags,
-                other.interupt_enable,
+                other.interrupt_flags,
+                other.interrupt_enable,
                 other.joypad_select,
                 other.buttons,
             )
@@ -713,11 +717,11 @@ impl MMU {
     fn tick_components(&mut self, t_cycles: usize) {
         let start = self.timer.counter() as usize;
         if self.timer.tick(t_cycles) {
-            self.interupt_flags |= TIMER_INTERRUPT;
+            self.interrupt_flags |= TIMER_INTERRUPT;
         }
         let start_half_dot = self.half_dot;
         let dots = self.dots_for(t_cycles);
-        self.interupt_flags |= self.ppu.tick(dots);
+        self.interrupt_flags |= self.ppu.tick(dots);
         if self.ppu.take_hblank_started() && self.vram_dma.is_some_and(|dma| dma.on_hblank) {
             self.copy_vram_dma_block();
         }
@@ -733,7 +737,7 @@ impl MMU {
             self.apu.tick(step_dots);
             counter += step;
             remaining -= step;
-            if counter % period == 0 {
+            if counter.is_multiple_of(period) {
                 self.apu.step_frame_sequencer();
             }
         }
@@ -765,7 +769,7 @@ impl MMU {
         if self.serial_bits == 0 {
             self.serial_data = 0xFF;
             self.serial_control &= 0x7F;
-            self.interupt_flags |= SERIAL_INTERRUPT;
+            self.interrupt_flags |= SERIAL_INTERRUPT;
         }
     }
 
@@ -791,7 +795,7 @@ impl MMU {
         if !interrupts {
             return m_cycles;
         }
-        let enabled = self.interupt_enable;
+        let enabled = self.interrupt_enable;
         m_cycles = m_cycles.min(self.dots_to_m_cycles(self.ppu.t_cycles_until_interrupt(enabled)));
         if enabled & TIMER_INTERRUPT != 0 {
             m_cycles = m_cycles.min(self.timer.m_cycles_until_overflow());
@@ -806,10 +810,164 @@ impl MMU {
     }
 
     pub fn pending_interrupts(&self) -> u8 {
-        self.interupt_flags & self.interupt_enable & 0x1F
+        self.interrupt_flags & self.interrupt_enable & 0x1F
     }
 
     pub fn acknowledge_interrupt(&mut self, bit: u32) {
-        self.interupt_flags &= !(1 << bit);
+        self.interrupt_flags &= !(1 << bit);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mmu(model: Model, cgb_cartridge: bool) -> Mmu {
+        let mut rom = vec![0; 0x8000];
+        rom[0x143] = if cgb_cartridge { 0x80 } else { 0 };
+        Mmu::new(Cartridge::new(rom, None), model)
+    }
+
+    #[test]
+    fn echo_ram_mirrors_work_ram() {
+        let mut mmu = mmu(Model::Dmg, false);
+        mmu.write_byte(0xC123, 0x42);
+        assert_eq!(mmu.read_byte(0xE123), 0x42);
+        mmu.write_byte(0xFDFF, 0x24);
+        assert_eq!(mmu.read_byte(0xDDFF), 0x24);
+    }
+
+    #[test]
+    fn the_cgb_banks_work_ram_at_d000() {
+        let mut mmu = mmu(Model::Cgb, true);
+        for bank in 1..8 {
+            mmu.write_byte(0xFF70, bank);
+            mmu.write_byte(0xD000, bank * 0x10);
+        }
+        mmu.write_byte(0xFF70, 0);
+        assert_eq!(mmu.read_byte(0xFF70), 0xF9, "bank 0 selects bank 1");
+        assert_eq!(mmu.read_byte(0xD000), 0x10);
+        mmu.write_byte(0xFF70, 7);
+        assert_eq!(mmu.read_byte(0xD000), 0x70);
+        assert_eq!(mmu.read_byte(0xC000), 0, "bank 0 stays at C000");
+    }
+
+    #[test]
+    fn the_dmg_has_no_cgb_registers() {
+        let mut mmu = mmu(Model::Dmg, false);
+        mmu.write_byte(0xFF70, 3);
+        assert_eq!(mmu.read_byte(0xFF70), 0xFF);
+        assert_eq!(mmu.read_byte(0xFF4D), 0xFF);
+    }
+
+    #[test]
+    fn joypad_reads_the_selected_button_group() {
+        let mut mmu = mmu(Model::Dmg, false);
+        mmu.set_buttons(buttons::A | buttons::DOWN);
+        mmu.write_byte(0xFF00, 0x20);
+        assert_eq!(mmu.read_byte(0xFF00) & 0x0F, 0b0111);
+        mmu.write_byte(0xFF00, 0x10);
+        assert_eq!(mmu.read_byte(0xFF00) & 0x0F, 0b1110);
+        mmu.write_byte(0xFF00, 0x30);
+        assert_eq!(mmu.read_byte(0xFF00) & 0x0F, 0x0F);
+    }
+
+    #[test]
+    fn pressing_a_button_requests_the_joypad_interrupt() {
+        let mut mmu = mmu(Model::Dmg, false);
+        mmu.write_byte(0xFFFF, JOYPAD_INTERRUPT);
+        mmu.write_byte(0xFF0F, 0);
+        mmu.set_buttons(buttons::START);
+        assert_eq!(mmu.pending_interrupts(), JOYPAD_INTERRUPT);
+    }
+
+    #[test]
+    fn unused_interrupt_flag_bits_read_as_set() {
+        let mut mmu = mmu(Model::Dmg, false);
+        mmu.write_byte(0xFF0F, 0x00);
+        assert_eq!(mmu.read_byte(0xFF0F), 0xE0);
+    }
+
+    #[test]
+    fn oam_dma_copies_160_bytes_and_blocks_the_bus() {
+        let mut mmu = mmu(Model::Dmg, false);
+        for index in 0..0xA0 {
+            mmu.write_byte(0xC100 + index, index as u8 ^ 0x5A);
+        }
+        mmu.write_byte(0xFF40, 0x00);
+        mmu.write_byte(0xFF46, 0xC1);
+        mmu.tick(2);
+        assert!(mmu.dma_active());
+        assert_eq!(mmu.cpu_read(0xC000), 0xFF);
+        assert_eq!(mmu.cpu_read(0xFF80), 0, "HRAM stays reachable");
+        mmu.tick(160);
+        assert!(!mmu.dma_active());
+        assert!((0..0xA0).all(|index| mmu.ppu.read_oam(0xFE00 + index) == index as u8 ^ 0x5A));
+    }
+
+    #[test]
+    fn general_purpose_vram_dma_copies_and_stalls_the_cpu() {
+        let mut mmu = mmu(Model::Cgb, true);
+        for index in 0..0x20 {
+            mmu.write_byte(0xC000 + index, index as u8 + 1);
+        }
+        for (addr, value) in [
+            (0xFF51, 0xC0),
+            (0xFF52, 0x00),
+            (0xFF53, 0x81),
+            (0xFF54, 0x00),
+        ] {
+            mmu.write_byte(addr, value);
+        }
+        mmu.write_byte(0xFF55, 0x01);
+        assert!(mmu.stall_pending());
+        assert_eq!(mmu.take_stall_cycles(), 2 * VRAM_DMA_BLOCK_CYCLES);
+        assert_eq!(mmu.read_byte(0xFF55), 0xFF);
+        assert!((0..0x20).all(|index| mmu.read_byte(0x8100 + index) == index as u8 + 1));
+    }
+
+    #[test]
+    fn serial_transfers_with_the_internal_clock_finish_with_an_interrupt() {
+        let mut mmu = mmu(Model::Dmg, false);
+        mmu.record_serial(true);
+        mmu.write_byte(0xFF0F, 0);
+        mmu.write_byte(0xFF01, b'Z');
+        mmu.write_byte(0xFF02, 0x81);
+        assert_eq!(mmu.take_serial(), b"Z");
+        mmu.tick(8 * SERIAL_CLOCK_PERIOD / 4 + 128);
+        assert_eq!(mmu.read_byte(0xFF02) & 0x80, 0);
+        assert_eq!(mmu.read_byte(0xFF01), 0xFF);
+        assert_ne!(mmu.read_byte(0xFF0F) & SERIAL_INTERRUPT, 0);
+    }
+
+    #[test]
+    fn cpu_writes_land_on_the_t_cycle_of_their_register() {
+        let mut dmg = mmu(Model::Dmg, false);
+        for (addr, t_cycle) in [
+            (0xC000, 3),
+            (0xFF42, 2),
+            (0xFF43, 2),
+            (0xFF47, 3),
+            (0xFF4A, 4),
+            (0xFF4B, 4),
+        ] {
+            dmg.begin_cpu_write(addr, 0);
+            assert_eq!(dmg.cycle_t, t_cycle, "{addr:04X}");
+            dmg.finish_cycle();
+        }
+        let mut cgb = mmu(Model::Cgb, true);
+        for (addr, t_cycle) in [(0xFF42, 3), (0xFF43, 4), (0xFF47, 2), (0xFF40, 4)] {
+            cgb.begin_cpu_write(addr, 0x91);
+            assert_eq!(cgb.cycle_t, t_cycle, "{addr:04X}");
+            cgb.finish_cycle();
+        }
+    }
+
+    #[test]
+    fn the_dmg_starts_with_the_boot_screen_in_vram() {
+        let dmg = mmu(Model::Dmg, false);
+        assert_eq!(dmg.read_byte(0x9910), 0x19);
+        let cgb = mmu(Model::Cgb, true);
+        assert_eq!(cgb.read_byte(0x9910), 0x00);
     }
 }

@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -20,7 +20,7 @@ const WINDOW_SHADES: [[u8; 3]; 4] = [
     [0x34, 0x68, 0x56],
     [0x08, 0x18, 0x20],
 ];
-const SCREENSHOT_SHADES: [[u8; 3]; 4] = [
+pub const SCREENSHOT_SHADES: [[u8; 3]; 4] = [
     [0xFF, 0xFF, 0xFF],
     [0xAA, 0xAA, 0xAA],
     [0x55, 0x55, 0x55],
@@ -43,7 +43,7 @@ const KEYMAP: [(Scancode, u8); 10] = [
 
 /// Converts a frame to RGB888: DMG shades through `shades`, CGB colours by
 /// widening each 5-bit channel.
-fn to_rgb(emulator: &Emulator, shades: &[[u8; 3]; 4]) -> Vec<u8> {
+pub fn to_rgb(emulator: &Emulator, shades: &[[u8; 3]; 4]) -> Vec<u8> {
     let frame = emulator.frame().iter();
     if emulator.renders_color() {
         let widen = |channel: u16| ((channel << 3) | (channel >> 2)) as u8;
@@ -52,6 +52,14 @@ fn to_rgb(emulator: &Emulator, shades: &[[u8; 3]; 4]) -> Vec<u8> {
             .collect()
     } else {
         frame.flat_map(|&shade| shades[shade as usize]).collect()
+    }
+}
+
+/// Writes the bytes the game sent over the link cable to stderr.
+pub fn print_serial(emulator: &mut Emulator) {
+    let bytes = emulator.take_serial();
+    if !bytes.is_empty() {
+        let _ = std::io::stderr().write_all(&bytes);
     }
 }
 
@@ -140,6 +148,7 @@ pub fn run_window(emulator: &mut Emulator, scale: u32, frames: Option<u64>) -> R
 
         emulator.set_buttons(pressed);
         emulator.run_frame();
+        print_serial(emulator);
         frame += 1;
         let samples = emulator.take_samples();
 

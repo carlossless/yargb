@@ -106,6 +106,10 @@ impl Cartridge {
             0x1B | 0x1E => (Mbc::Mbc5, true),
             other => panic!("cartridge type {other:#04X} is not supported"),
         };
+        let has_ram = matches!(
+            kind,
+            0x02 | 0x03 | 0x08 | 0x09 | 0x10 | 0x12 | 0x13 | 0x1A | 0x1B | 0x1D | 0x1E
+        );
         let ram_size = match (mbc, header(0x149)) {
             (Mbc::Mbc2, _) => 0x200,
             (_, 1) => 0x800,
@@ -113,6 +117,8 @@ impl Cartridge {
             (_, 3) => 0x8000,
             (_, 4) => 0x20000,
             (_, 5) => 0x10000,
+            // Some cartridges with RAM declare a size of 0; they still get a bank.
+            _ if has_ram => 0x2000,
             _ => 0,
         };
         let rom_size = rom.len().next_power_of_two().max(2 * ROM_BANK);
@@ -139,6 +145,11 @@ impl Cartridge {
             save_path: save_path.filter(|_| battery),
             cgb_flag,
         }
+    }
+
+    #[cfg(test)]
+    pub fn ram(&self) -> &[u8] {
+        &self.ram
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -257,5 +268,146 @@ impl Cartridge {
         let seconds = self.clock_cycles / T_CYCLES_PER_SECOND;
         self.clock_cycles %= T_CYCLES_PER_SECOND;
         self.clock.advance(seconds);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A ROM whose every bank starts with its own number.
+    fn cartridge(kind: u8, rom_banks: usize, ram_size: u8) -> Cartridge {
+        let mut rom = vec![0; rom_banks * ROM_BANK];
+        for bank in 0..rom_banks {
+            rom[bank * ROM_BANK] = bank as u8;
+        }
+        rom[0x147] = kind;
+        rom[0x149] = ram_size;
+        Cartridge::new(rom, None)
+    }
+
+    fn bank_at(cartridge: &Cartridge, addr: u16) -> u8 {
+        cartridge.read_rom(addr & 0xC000)
+    }
+
+    #[test]
+    fn rom_only_cartridges_ignore_bank_writes() {
+        let mut cartridge = cartridge(0x00, 2, 0);
+        cartridge.write_rom(0x2000, 5);
+        assert_eq!(bank_at(&cartridge, 0x4000), 1);
+        assert_eq!(cartridge.read_ram(0xA000), 0xFF);
+    }
+
+    #[test]
+    fn mbc1_switches_rom_banks_and_maps_bank_0_to_1() {
+        let mut cartridge = cartridge(0x01, 64, 0);
+        cartridge.write_rom(0x2000, 0);
+        assert_eq!(bank_at(&cartridge, 0x4000), 1);
+        cartridge.write_rom(0x2000, 0x13);
+        assert_eq!(bank_at(&cartridge, 0x4000), 0x13);
+        cartridge.write_rom(0x4000, 1);
+        assert_eq!(bank_at(&cartridge, 0x4000), 0x33);
+        assert_eq!(bank_at(&cartridge, 0x0000), 0);
+        cartridge.write_rom(0x6000, 1);
+        assert_eq!(bank_at(&cartridge, 0x0000), 0x20);
+    }
+
+    #[test]
+    fn rom_banks_wrap_to_the_rom_size() {
+        let mut cartridge = cartridge(0x01, 4, 0);
+        cartridge.write_rom(0x2000, 6);
+        assert_eq!(bank_at(&cartridge, 0x4000), 2);
+    }
+
+    #[test]
+    fn ram_needs_enabling() {
+        let mut cartridge = cartridge(0x03, 2, 2);
+        cartridge.write_ram(0xA000, 0x42);
+        assert_eq!(cartridge.read_ram(0xA000), 0xFF);
+        cartridge.write_rom(0x0000, 0x0A);
+        cartridge.write_ram(0xA000, 0x42);
+        assert_eq!(cartridge.read_ram(0xA000), 0x42);
+        cartridge.write_rom(0x0000, 0x00);
+        assert_eq!(cartridge.read_ram(0xA000), 0xFF);
+    }
+
+    #[test]
+    fn mbc1_ram_banks_need_advanced_banking() {
+        let mut cartridge = cartridge(0x03, 2, 3);
+        cartridge.write_rom(0x0000, 0x0A);
+        cartridge.write_rom(0x4000, 2);
+        cartridge.write_ram(0xA000, 1);
+        cartridge.write_rom(0x6000, 1);
+        cartridge.write_ram(0xA000, 2);
+        assert_eq!(cartridge.ram()[0], 1);
+        assert_eq!(cartridge.ram()[2 * RAM_BANK], 2);
+    }
+
+    #[test]
+    fn ram_declared_without_a_size_still_gets_a_bank() {
+        assert_eq!(cartridge(0x02, 2, 0).ram().len(), RAM_BANK);
+        assert!(cartridge(0x01, 2, 0).ram().is_empty());
+    }
+
+    #[test]
+    fn mbc2_has_512_half_bytes_of_ram() {
+        let mut cartridge = cartridge(0x06, 4, 0);
+        cartridge.write_rom(0x0000, 0x0A);
+        cartridge.write_ram(0xA000, 0xAB);
+        assert_eq!(cartridge.read_ram(0xA000), 0xFB);
+        assert_eq!(cartridge.read_ram(0xA200), 0xFB);
+        cartridge.write_rom(0x0100, 3);
+        assert_eq!(bank_at(&cartridge, 0x4000), 3);
+    }
+
+    #[test]
+    fn mbc3_clock_counts_and_latches() {
+        let mut cartridge = cartridge(0x10, 2, 3);
+        cartridge.write_rom(0x0000, 0x0A);
+        cartridge.tick(T_CYCLES_PER_SECOND as usize * 61);
+        cartridge.write_rom(0x6000, 0);
+        cartridge.write_rom(0x6000, 1);
+        cartridge.write_rom(0x4000, 0x08);
+        assert_eq!(cartridge.read_ram(0xA000), 1);
+        cartridge.write_rom(0x4000, 0x09);
+        assert_eq!(cartridge.read_ram(0xA000), 1);
+        cartridge.tick(T_CYCLES_PER_SECOND as usize);
+        cartridge.write_rom(0x4000, 0x08);
+        assert_eq!(
+            cartridge.read_ram(0xA000),
+            1,
+            "latched value until the next latch"
+        );
+    }
+
+    #[test]
+    fn mbc3_clock_stops_when_halted() {
+        let mut cartridge = cartridge(0x10, 2, 3);
+        cartridge.write_rom(0x0000, 0x0A);
+        cartridge.write_rom(0x4000, 0x0C);
+        cartridge.write_ram(0xA000, 0x40);
+        cartridge.tick(T_CYCLES_PER_SECOND as usize * 10);
+        cartridge.write_rom(0x6000, 0);
+        cartridge.write_rom(0x6000, 1);
+        cartridge.write_rom(0x4000, 0x08);
+        assert_eq!(cartridge.read_ram(0xA000), 0);
+    }
+
+    #[test]
+    fn mbc5_has_nine_bit_rom_banks_and_bank_0() {
+        let mut cartridge = cartridge(0x19, 512, 0);
+        cartridge.write_rom(0x2000, 0);
+        assert_eq!(bank_at(&cartridge, 0x4000), 0);
+        cartridge.write_rom(0x2000, 0x34);
+        cartridge.write_rom(0x3000, 1);
+        assert_eq!(cartridge.rom_offset(0x4000), 0x134 * ROM_BANK);
+    }
+
+    #[test]
+    fn the_cgb_flag_comes_from_the_header() {
+        let mut rom = vec![0; 2 * ROM_BANK];
+        rom[0x143] = 0x80;
+        assert!(Cartridge::new(rom, None).supports_cgb());
+        assert!(!cartridge(0x00, 2, 0).supports_cgb());
     }
 }

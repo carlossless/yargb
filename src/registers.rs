@@ -154,3 +154,34 @@ impl Registers {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pairs_combine_high_and_low_registers() {
+        let mut registers = DEFAULT_DMG_REGISTERS;
+        registers.set_bc(0x1234);
+        registers.set_de(0x5678);
+        registers.set_hl(0x9ABC);
+        assert_eq!((registers.b, registers.c), (0x12, 0x34));
+        assert_eq!((registers.d, registers.e), (0x56, 0x78));
+        assert_eq!((registers.h, registers.l), (0x9A, 0xBC));
+        registers.set(WordRegister::SP, 0xFFFE);
+        assert_eq!(registers.get(WordRegister::SP), 0xFFFE);
+        assert_eq!(registers.get(WordRegister::DE), 0x5678);
+    }
+
+    #[test]
+    fn flags_are_the_top_bits_of_f() {
+        let mut registers = DEFAULT_DMG_REGISTERS;
+        registers.set_af(0x0000);
+        registers.set_flag(Flag::Z, true);
+        registers.set_flag(Flag::C, true);
+        assert_eq!(registers.get_af(), 0x0090);
+        assert!(registers.get_flag(Flag::Z) && !registers.get_flag(Flag::N));
+        registers.set_flag(Flag::Z, false);
+        assert_eq!(registers.f, 0x10);
+    }
+}

@@ -1,9 +1,9 @@
-use crate::cpu::CPU;
+use crate::cpu::Cpu;
 use crate::registers::Flag::{C, H, N, Z};
 
 macro_rules! rlc {
     ($source_register:ident) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let x = cpu.regs.$source_register;
             let r = cpu.rotate_left_carry(x);
             cpu.regs.$source_register = r;
@@ -14,7 +14,7 @@ macro_rules! rlc {
 
 macro_rules! rlc_hl {
     () => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             let x = cpu.read(addr);
             let r = cpu.rotate_left_carry(x);
@@ -26,7 +26,7 @@ macro_rules! rlc_hl {
 
 macro_rules! rrc {
     ($source_register:ident) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let x = cpu.regs.$source_register;
             let r = cpu.rotate_right_carry(x);
             cpu.regs.$source_register = r;
@@ -37,7 +37,7 @@ macro_rules! rrc {
 
 macro_rules! rrc_hl {
     () => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             let x = cpu.read(addr);
             let r = cpu.rotate_right_carry(x);
@@ -49,7 +49,7 @@ macro_rules! rrc_hl {
 
 macro_rules! rl {
     ($source_register:ident) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let x = cpu.regs.$source_register;
             let r = cpu.rotate_left(x);
             cpu.regs.$source_register = r;
@@ -60,7 +60,7 @@ macro_rules! rl {
 
 macro_rules! rl_hl {
     () => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             let x = cpu.read(addr);
             let r = cpu.rotate_left(x);
@@ -72,7 +72,7 @@ macro_rules! rl_hl {
 
 macro_rules! rr {
     ($source_register:ident) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let x = cpu.regs.$source_register;
             let r = cpu.rotate_right(x);
             cpu.regs.$source_register = r;
@@ -83,7 +83,7 @@ macro_rules! rr {
 
 macro_rules! rr_hl {
     () => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             let x = cpu.read(addr);
             let r = cpu.rotate_right(x);
@@ -95,7 +95,7 @@ macro_rules! rr_hl {
 
 macro_rules! srl {
     ($source_register:ident) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let x = cpu.regs.$source_register;
             let r = cpu.shift_right_logical(x);
             cpu.regs.$source_register = r;
@@ -106,7 +106,7 @@ macro_rules! srl {
 
 macro_rules! srl_hl {
     () => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             let x = cpu.read(addr);
             let r = cpu.shift_right_logical(x);
@@ -118,7 +118,7 @@ macro_rules! srl_hl {
 
 macro_rules! swap {
     ($source_register:ident) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let x = cpu.regs.$source_register;
             let r = cpu.swap(x);
             cpu.regs.$source_register = r;
@@ -129,7 +129,7 @@ macro_rules! swap {
 
 macro_rules! swap_hl {
     () => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             let x = cpu.read(addr);
             let r = cpu.swap(x);
@@ -141,7 +141,7 @@ macro_rules! swap_hl {
 
 macro_rules! sla {
     ($source_register:ident) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let x = cpu.regs.$source_register;
             let r = cpu.sla(x);
             cpu.regs.$source_register = r;
@@ -152,7 +152,7 @@ macro_rules! sla {
 
 macro_rules! sla_hl {
     () => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             let x = cpu.read(addr);
             let r = cpu.sla(x);
@@ -164,7 +164,7 @@ macro_rules! sla_hl {
 
 macro_rules! sra {
     ($source_register:ident) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let x = cpu.regs.$source_register;
             let r = cpu.sra(x);
             cpu.regs.$source_register = r;
@@ -175,7 +175,7 @@ macro_rules! sra {
 
 macro_rules! sra_hl {
     () => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             let x = cpu.read(addr);
             let r = cpu.sra(x);
@@ -187,7 +187,7 @@ macro_rules! sra_hl {
 
 macro_rules! bit {
     ($i:expr,$source_register:ident) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             use crate::registers::Flag::{H, N, Z};
             let x = cpu.regs.$source_register;
             cpu.regs.set_flag(Z, (x & (1 << $i)) == 0);
@@ -200,7 +200,7 @@ macro_rules! bit {
 
 macro_rules! bit_hl {
     ($i:expr) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             use crate::registers::Flag::{H, N, Z};
             let addr = cpu.regs.get_hl();
             let x = cpu.read(addr);
@@ -214,7 +214,7 @@ macro_rules! bit_hl {
 
 macro_rules! res {
     ($i:expr,$source_register:ident) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let x = cpu.regs.$source_register;
             let r = x & !(1 << $i);
             cpu.regs.$source_register = r;
@@ -225,7 +225,7 @@ macro_rules! res {
 
 macro_rules! res_hl {
     ($i:expr) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             let x = cpu.read(addr);
             cpu.write(addr, x & !(1 << $i));
@@ -236,7 +236,7 @@ macro_rules! res_hl {
 
 macro_rules! set {
     ($i:expr,$source_register:ident) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let x = cpu.regs.$source_register;
             let r = x | (1 << $i);
             cpu.regs.$source_register = r;
@@ -247,7 +247,7 @@ macro_rules! set {
 
 macro_rules! set_hl {
     ($i:expr) => {
-        |cpu: &mut CPU| {
+        |cpu: &mut Cpu| {
             let addr = cpu.regs.get_hl();
             let x = cpu.read(addr);
             cpu.write(addr, x | (1 << $i));
@@ -256,7 +256,7 @@ macro_rules! set_hl {
     };
 }
 
-impl CPU {
+impl Cpu {
     pub fn rotate_left_circular_accumulator(&mut self) -> usize {
         let a = self.regs.a;
         self.regs.set_flag(Z, false);
@@ -310,7 +310,7 @@ impl CPU {
     }
 
     pub fn swap(&mut self, value: u8) -> u8 {
-        let r = value >> 4 | value << 4;
+        let r = value.rotate_left(4);
         self.regs.set_flag(Z, r == 0);
         self.regs.set_flag(N, false);
         self.regs.set_flag(H, false);

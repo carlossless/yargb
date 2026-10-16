@@ -3,6 +3,7 @@ name = "yargb"
 version = "0.1.0"
 authors = ["Karolis Stasaitis <contact@carlossless.io>"]
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 cranelift-codegen = "0.136.3"
