@@ -23,7 +23,6 @@ pub enum Flag {
 }
 
 pub enum WordRegister {
-    AF,
     BC,
     DE,
     HL,
@@ -69,12 +68,6 @@ pub const DEFAULT_CGB_COMPAT_REGISTERS: Registers = Registers {
 };
 
 impl Registers {
-    pub fn new() -> Registers {
-        Registers {
-            ..DEFAULT_DMG_REGISTERS
-        }
-    }
-
     pub fn get_af(&self) -> u16 {
         ((self.a as u16) << 8) | (self.f as u16)
     }
@@ -113,7 +106,6 @@ impl Registers {
 
     pub fn set(&mut self, register: WordRegister, value: u16) {
         match register {
-            WordRegister::AF => self.set_af(value),
             WordRegister::BC => self.set_bc(value),
             WordRegister::DE => self.set_de(value),
             WordRegister::HL => self.set_hl(value),
@@ -123,7 +115,6 @@ impl Registers {
 
     pub fn get(&self, register: WordRegister) -> u16 {
         match register {
-            WordRegister::AF => self.get_af(),
             WordRegister::BC => self.get_bc(),
             WordRegister::DE => self.get_de(),
             WordRegister::HL => self.get_hl(),

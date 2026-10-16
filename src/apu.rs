@@ -10,6 +10,11 @@ const DUTY_PATTERNS: [[u8; 8]; 4] = [
 
 const NOISE_DIVISORS: [u32; 8] = [8, 16, 32, 48, 64, 80, 96, 112];
 
+/// Extra cycles before a triggered wave channel fetches its first sample.
+const WAVE_TRIGGER_DELAY: u32 = 6;
+/// The DMG reaches wave RAM during playback only this soon after a fetch.
+const WAVE_ACCESS_WINDOW: u32 = 2;
+
 const READ_MASKS: [u8; 0x17] = [
     0x80, 0x3F, 0x00, 0xFF, 0xBF, 0xFF, 0x3F, 0x00, 0xFF, 0xBF, 0x7F, 0xFF, 0x9F, 0xFF, 0xBF, 0xFF,
     0xFF, 0x00, 0x00, 0xBF, 0x00, 0x00, 0x70,
@@ -130,6 +135,7 @@ struct Wave {
     frequency: u16,
     timer: u32,
     position: u8,
+    since_fetch: u32,
     ram: [u8; 16],
 }
 
@@ -143,8 +149,32 @@ impl Wave {
             cycles -= self.timer;
             self.timer = self.period();
             self.position = (self.position + 1) % 32;
+            self.since_fetch = 0;
         }
         self.timer -= cycles;
+        self.since_fetch = self.since_fetch.saturating_add(cycles);
+    }
+
+    /// Retriggering the DMG wave channel just as it fetches overwrites the
+    /// start of wave RAM with the bytes it was about to read.
+    fn corrupt_on_retrigger(&mut self) {
+        let offset = (self.position as usize + 1) / 2 % 16;
+        if offset < 4 {
+            self.ram[0] = self.ram[offset];
+        } else {
+            let start = offset & !3;
+            self.ram.copy_within(start..start + 4, 0);
+        }
+    }
+
+    fn ram_index(&self, addr: u16, cgb: bool) -> Option<usize> {
+        if !self.enabled {
+            Some(addr as usize - 0xFF30)
+        } else if cgb || self.since_fetch < WAVE_ACCESS_WINDOW {
+            Some(self.position as usize / 2)
+        } else {
+            None
+        }
     }
 
     fn output(&self) -> Option<u8> {
@@ -240,6 +270,7 @@ impl Apu {
                 frequency: 0,
                 timer: 0,
                 position: 0,
+                since_fetch: u32::MAX,
                 ram: [0; 16],
             },
             noise: Noise::default(),
@@ -396,10 +427,10 @@ impl Apu {
                 let index = addr as usize - 0xFF10;
                 self.registers[index] | READ_MASKS[index]
             }
-            0xFF30..=0xFF3F if self.cgb && self.wave.enabled => {
-                self.wave.ram[self.wave.position as usize / 2]
-            }
-            0xFF30..=0xFF3F => self.wave.ram[addr as usize - 0xFF30],
+            0xFF30..=0xFF3F => self
+                .wave
+                .ram_index(addr, self.cgb)
+                .map_or(0xFF, |index| self.wave.ram[index]),
             _ => 0xFF,
         }
     }
@@ -443,7 +474,9 @@ impl Apu {
             return;
         }
         if (0xFF30..=0xFF3F).contains(&addr) {
-            self.wave.ram[addr as usize - 0xFF30] = value;
+            if let Some(index) = self.wave.ram_index(addr, self.cgb) {
+                self.wave.ram[index] = value;
+            }
             return;
         }
         if !(0xFF10..=0xFF25).contains(&addr) {
@@ -540,6 +573,7 @@ impl Apu {
             0xFF1E => {
                 self.wave.frequency = self.wave.frequency & 0xFF | (value as u16 & 7) << 8;
                 let wave = &mut self.wave;
+                let was_playing = wave.enabled;
                 if write_length_control(
                     &mut wave.length,
                     &mut wave.enabled,
@@ -547,8 +581,11 @@ impl Apu {
                     256,
                     length_steps_next,
                 ) {
+                    if !self.cgb && was_playing && wave.timer <= WAVE_ACCESS_WINDOW {
+                        wave.corrupt_on_retrigger();
+                    }
                     wave.enabled = wave.dac_on;
-                    wave.timer = wave.period();
+                    wave.timer = wave.period() + WAVE_TRIGGER_DELAY;
                     wave.position = 0;
                 }
             }

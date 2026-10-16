@@ -734,9 +734,4 @@ impl MMU {
     pub fn acknowledge_interrupt(&mut self, bit: u32) {
         self.interupt_flags &= !(1 << bit);
     }
-
-    pub fn write_word(&mut self, addr: u16, value: u16) {
-        self.write_byte(addr, (value & 0xFF) as u8);
-        self.write_byte(addr.wrapping_add(1), (value >> 8) as u8);
-    }
 }

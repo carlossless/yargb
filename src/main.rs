@@ -9,7 +9,6 @@ mod mmu;
 mod ppu;
 mod registers;
 mod timer;
-mod utils;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

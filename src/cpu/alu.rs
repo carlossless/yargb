@@ -1,4 +1,3 @@
-use std::result;
 
 use crate::cpu::CPU;
 use crate::registers::Flag::{C, H, N, Z};

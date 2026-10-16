@@ -1085,10 +1085,6 @@ impl CPU {
         self.locked = true;
         1
     }
-
-    fn unimplemented(&mut self) -> usize {
-        unimplemented!("op is unimplemented")
-    }
 }
 
 #[cfg(test)]
