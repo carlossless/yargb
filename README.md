@@ -10,7 +10,7 @@ Needs Rust and SDL2. With Nix, `nix develop` provides both.
 cargo run --release -- game.gb
 ```
 
-Battery saves are written next to the ROM as `game.sav`.
+In-game saves are kept next to the ROM as `game.sav` and written when you quit.
 
 | Key | Button |
 |---|---|
