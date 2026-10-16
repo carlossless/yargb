@@ -24,25 +24,23 @@ macro_rules! alu_dec_byte {
     };
 }
 
-// TODO: could be replaced by patern matched functions instead of the intermal match
 macro_rules! alu_inc_word {
     ($register:ident) => {
         |cpu: &mut CPU| {
-            let mut v = cpu.regs.get($register);
-            cpu.alu_inc_word(&mut v);
-            cpu.regs.set($register, v);
+            let v = cpu.regs.get($register);
+            cpu.internal_at(v);
+            cpu.regs.set($register, v.wrapping_add(1));
             2
         }
     };
 }
 
-// TODO: could be replaced by patern matched functions instead of the intermal match
 macro_rules! alu_dec_word {
     ($register:ident) => {
         |cpu: &mut CPU| {
-            let mut v = cpu.regs.get($register);
-            cpu.alu_dec_word(&mut v);
-            cpu.regs.set($register, v);
+            let v = cpu.regs.get($register);
+            cpu.internal_at(v);
+            cpu.regs.set($register, v.wrapping_sub(1));
             2
         }
     };
@@ -152,10 +150,6 @@ impl CPU {
         *value = result;
     }
 
-    pub fn alu_inc_word(&mut self, value: &mut u16) {
-        *value = value.wrapping_add(1)
-    }
-
     pub fn alu_dec_byte(&mut self, value: &mut u8) {
         let result = value.wrapping_sub(1);
         self.regs.set_flag(Z, result == 0);
@@ -164,9 +158,6 @@ impl CPU {
         *value = result;
     }
 
-    pub fn alu_dec_word(&mut self, value: &mut u16) {
-        *value = value.wrapping_sub(1)
-    }
 
     pub fn alu_add_to_hl(&mut self, value: u16) {
         let hl = self.regs.get_hl();

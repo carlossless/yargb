@@ -118,7 +118,7 @@ impl CPU {
     }
 
     pub fn stack_push(&mut self, value: u16) {
-        self.internal();
+        self.internal_at(self.regs.sp);
         self.push_bytes(value);
     }
 

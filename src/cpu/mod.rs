@@ -580,6 +580,7 @@ impl CPU {
         }),
         dop!("LD SP,HL", &|cpu: &mut CPU| {
             let hl = cpu.regs.get_hl();
+            cpu.internal_at(hl);
             cpu.regs.sp = hl;
             2
         }),
@@ -933,6 +934,13 @@ impl CPU {
         self.tick_cycle();
     }
 
+    /// An internal cycle that puts `addr` on the address bus, as 16-bit
+    /// increments and decrements do.
+    pub(crate) fn internal_at(&mut self, addr: u16) {
+        self.mmu.oam_bug_idle(addr);
+        self.tick_cycle();
+    }
+
     pub(crate) fn read(&mut self, addr: u16) -> u8 {
         self.tick_cycle();
         self.mmu.cpu_read(addr)
@@ -965,7 +973,7 @@ impl CPU {
         }
         self.regs.ime = false;
         self.internal();
-        self.internal();
+        self.internal_at(self.regs.sp);
         let pc = self.regs.pc;
         self.regs.sp = self.regs.sp.wrapping_sub(1);
         self.write(self.regs.sp, (pc >> 8) as u8);

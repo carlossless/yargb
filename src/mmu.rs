@@ -23,8 +23,15 @@ pub fn is_io(addr: u16) -> bool {
 
 /// Whether an access to `addr` must see the hardware caught up to the current cycle.
 pub fn needs_sync(addr: u16) -> bool {
-    is_io(addr) || matches!(addr, 0x8000..=0x9FFF | 0xFE00..=0xFE9F)
+    is_io(addr) || matches!(addr, 0x8000..=0x9FFF) || is_oam_bug_address(addr)
 }
+
+fn is_oam_bug_address(addr: u16) -> bool {
+    (0xFE00..=0xFEFF).contains(&addr)
+}
+
+/// T-cycles into its M-cycle at which a CPU read happens.
+const OAM_BUG_READ_T: u32 = 4;
 
 /// Which console is emulated.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -154,6 +161,10 @@ impl MMU {
             code_refs: [0; 0x10000],
             dirty_code: Vec::new(),
         }
+    }
+
+    pub fn has_oam_bug(&self) -> bool {
+        !self.cgb
     }
 
     pub fn dots_per_m_cycle(&self) -> usize {
@@ -529,14 +540,27 @@ impl MMU {
         }
     }
 
-    pub fn cpu_read(&self, addr: u16) -> u8 {
+    pub fn cpu_read(&mut self, addr: u16) -> u8 {
+        if is_oam_bug_address(addr) {
+            self.ppu.oam_bug_read(OAM_BUG_READ_T);
+        }
         if self.bus_blocked(addr) || self.ppu_blocked(addr, false) {
             return 0xFF;
         }
         self.read_byte(addr)
     }
 
+    /// A 16-bit increment or decrement of `addr` at the start of an M-cycle.
+    pub fn oam_bug_idle(&mut self, addr: u16) {
+        if is_oam_bug_address(addr) {
+            self.ppu.oam_bug_write(0);
+        }
+    }
+
     pub fn cpu_write(&mut self, addr: u16, value: u8) {
+        if is_oam_bug_address(addr) {
+            self.ppu.oam_bug_write(self.cycle_t as u32);
+        }
         if self.bus_blocked(addr) || self.ppu_blocked(addr, true) {
             return;
         }

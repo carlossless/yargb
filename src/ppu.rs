@@ -21,6 +21,9 @@ const LCD_ON_DOT: u32 = 3;
 /// Line 0 after turning the LCD on has no OAM scan and starts its transfer
 /// 2 dots later than other lines.
 const FIRST_LINE_TRANSFER_DOT: u32 = OAM_SCAN_DOTS + 2;
+/// The OAM scan moves to the next 8-byte row every 4 dots, this many dots
+/// before the dot count reaches a multiple of 4.
+const OAM_BUG_ROW_LAG: u32 = 5;
 
 pub const VBLANK_INTERRUPT: u8 = 1 << 0;
 pub const STAT_INTERRUPT: u8 = 1 << 1;
@@ -867,6 +870,91 @@ impl Ppu {
             0xFF6B => write_palette(&mut self.obj_palettes, &mut self.obj_palette_index),
             0xFF6C => self.x_priority = value & 1 != 0,
             _ => {}
+        }
+    }
+
+    /// The 8-byte OAM row the DMG's OAM scan was reading `t_ago` dots ago,
+    /// when that row can be corrupted (row 0 never is).
+    fn oam_bug_row(&self, t_ago: u32) -> Option<usize> {
+        if self.cgb || !self.enabled() || self.first_line || self.ly >= SCREEN_HEIGHT as u8 {
+            return None;
+        }
+        let dot = self.dot.checked_sub(t_ago)?;
+        let row = ((dot + OAM_BUG_ROW_LAG) / 4) as usize;
+        (dot < OAM_SCAN_DOTS && (1..20).contains(&row)).then_some(row * 8)
+    }
+
+    fn oam_word(&self, offset: usize) -> u16 {
+        u16::from_le_bytes([self.oam[offset], self.oam[offset + 1]])
+    }
+
+    fn set_oam_word(&mut self, offset: usize, value: u16) {
+        self.oam[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn copy_oam_row(&mut self, from: usize, to: usize) {
+        self.oam.copy_within(from..from + 8, to);
+    }
+
+    /// Corruption from a write, or from a 16-bit increment or decrement, with
+    /// an address in FE00-FEFF during the DMG's OAM scan.
+    pub fn oam_bug_write(&mut self, t_ago: u32) {
+        let Some(row) = self.oam_bug_row(t_ago) else {
+            return;
+        };
+        let (a, b, c) = (
+            self.oam_word(row),
+            self.oam_word(row - 8),
+            self.oam_word(row - 4),
+        );
+        self.set_oam_word(row, ((a ^ c) & (b ^ c)) ^ c);
+        self.oam.copy_within(row - 6..row, row + 2);
+    }
+
+    /// Corruption from a read in FE00-FEFF during the DMG's OAM scan.
+    pub fn oam_bug_read(&mut self, t_ago: u32) {
+        let Some(row) = self.oam_bug_row(t_ago) else {
+            return;
+        };
+        let word = |ppu: &Ppu, offset: isize| ppu.oam_word(row.wrapping_add_signed(offset));
+        let previous = row - 8;
+        match row & 0x18 {
+            0x10 => {
+                let (a, b, c, d) = (word(self, -16), word(self, -8), word(self, 0), word(self, -4));
+                self.set_oam_word(previous, (b & (a | c | d)) | (a & c & d));
+                self.copy_oam_row(previous, row - 16);
+            }
+            0x00 => {
+                let (a, b, c, d, e) = (
+                    word(self, 0),
+                    word(self, -4),
+                    word(self, -8),
+                    word(self, -16),
+                    word(self, -32),
+                );
+                let value = match row {
+                    0x40 => {
+                        let (f, g) = (word(self, -6), word(self, -14));
+                        (c & (e | d | (!f & g) | b | a)) | (b & d & e)
+                    }
+                    0x20 => (c & (a | b | d | e)) | (a & b & d & e),
+                    0x60 => (c & (a | b | d | e)) | (b & d & e),
+                    _ => c | (a & b & d & e),
+                };
+                self.set_oam_word(previous, value);
+                self.copy_oam_row(previous, row - 16);
+                self.copy_oam_row(previous, row - 32);
+            }
+            _ => {
+                let (a, b, c) = (word(self, 0), word(self, -8), word(self, -4));
+                let value = b | (a & c);
+                self.set_oam_word(previous, value);
+                self.set_oam_word(row, value);
+            }
+        }
+        self.copy_oam_row(previous, row);
+        if row == 0x80 {
+            self.copy_oam_row(row, 0);
         }
     }
 

@@ -212,7 +212,9 @@ impl Jit {
         });
         let builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_ctx);
         let config = self.module.target_config();
-        let block_end = Emitter::new(builder, ptr, sigs).emit_block(mmu, start, end, config);
+        let mut emitter = Emitter::new(builder, ptr, sigs);
+        emitter.oam_bug = mmu.has_oam_bug();
+        let block_end = emitter.emit_block(mmu, start, end, config);
 
         self.module.define_function(id, &mut self.ctx).unwrap();
         self.module.clear_context(&mut self.ctx);
@@ -345,6 +347,13 @@ extern "C" fn jit_write(cpu: *mut CPU, addr: u32, value: u32) -> u32 {
     cpu.mmu.take_exit_request() as u32
 }
 
+extern "C" fn jit_oam_bug(cpu: *mut CPU, addr: u32) -> u32 {
+    let cpu = unsafe { &mut *cpu };
+    cpu.sync_jit_hardware();
+    cpu.mmu.oam_bug_idle(addr as u16);
+    0
+}
+
 extern "C" fn jit_interpret(cpu: *mut CPU) -> u32 {
     let cpu = unsafe { &mut *cpu };
     cpu.sync_jit_hardware();
@@ -408,6 +417,7 @@ struct Emitter<'a> {
     exit: Block,
     exit_request: Option<Value>,
     cycle: i64,
+    oam_bug: bool,
     read_sig: SigRef,
     write_sig: SigRef,
     interpret_sig: SigRef,
@@ -448,6 +458,7 @@ impl<'a> Emitter<'a> {
             exit,
             exit_request: None,
             cycle: 0,
+            oam_bug: false,
             read_sig,
             write_sig,
             interpret_sig,
@@ -671,6 +682,23 @@ impl<'a> Emitter<'a> {
         self.cycle += 1;
     }
 
+    /// An internal cycle with `addr` on the address bus, which corrupts OAM
+    /// on the DMG when it points there.
+    fn internal_at(&mut self, addr: Value) {
+        if self.oam_bug {
+            let page = self.b.ins().ushr_imm_u(addr, 8);
+            let in_oam = self.b.ins().icmp_imm_u(IntCC::Equal, page, 0xFE);
+            let (corrupt, done) = (self.b.create_block(), self.b.create_block());
+            self.b.ins().brif(in_oam, corrupt, &[], done, &[]);
+            self.b.switch_to_block(corrupt);
+            self.store_ticks();
+            self.call(self.read_sig, jit_oam_bug as *const () as usize, &[addr]);
+            self.b.ins().jump(done, &[]);
+            self.b.switch_to_block(done);
+        }
+        self.internal();
+    }
+
     fn read(&mut self, addr: Value) -> Value {
         self.cycle += 1;
         let done = self.b.create_block();
@@ -841,7 +869,8 @@ impl<'a> Emitter<'a> {
     }
 
     fn push(&mut self, value: Value) {
-        self.internal();
+        let sp = self.b.use_var(self.sp);
+        self.internal_at(sp);
         let hi = self.b.ins().ushr_imm_u(value, 8);
         let lo = self.b.ins().band_imm_u(value, 0xFF);
         for byte in [hi, lo] {
@@ -1082,6 +1111,7 @@ impl<'a> Emitter<'a> {
             }
             0x03 | 0x13 | 0x23 | 0x33 | 0x0B | 0x1B | 0x2B | 0x3B => {
                 let value = self.get_pair(pair, false);
+                self.internal_at(value);
                 let delta = if op & 0x08 == 0 { 1 } else { -1 };
                 let value = self.b.ins().iadd_imm_s(value, delta);
                 let value = self.b.ins().band_imm_u(value, 0xFFFF);
@@ -1294,6 +1324,7 @@ impl<'a> Emitter<'a> {
             }
             0xF9 => {
                 let hl = self.get_pair(2, false);
+                self.internal_at(hl);
                 self.b.def_var(self.sp, hl);
                 self.tick(2);
             }
@@ -1454,7 +1485,10 @@ mod tests {
                 let [lo, hi] = (0x8000 + rng.below(0x2000) as u16).to_le_bytes();
                 code = vec![0x21, lo, hi, rng.pick(&[0x77, 0x7E, 0x34])];
             }
-            11 => code = vec![0x21, rng.below(0xA0) as u8, 0xFE, rng.pick(&[0x77, 0x7E])],
+            11 => {
+                let op = rng.pick(&[0x77, 0x7E, 0x23, 0x2B, 0x22, 0x32, 0x2A, 0x3A]);
+                code = vec![0x21, rng.byte(), 0xFE, op];
+            }
             12 => code = vec![0xF0, rng.pick(&[0x41, 0x44, 0x26, 0x12, 0x30, 0x00])],
             13 => {
                 let port = rng.pick(&[
